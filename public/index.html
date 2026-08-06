@@ -559,7 +559,7 @@
         document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
       });
       ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
-        $(id).addEventListener('input', () => { state.formDirty = true; });
+        $(id).addEventListener('input', () => { state.formDirty = true; drawChart(); });
       });
       $('trend-btn').addEventListener('click', loadTrend);
       $('smart-btn').addEventListener('click', runSmartFill);
@@ -1340,18 +1340,48 @@
       $('chart-empty').style.display = points.length < 2 ? 'grid' : 'none';
       if (points.length < 2) return;
       const values = points.map((point) => point.value);
-      let min = Math.min(...values), max = Math.max(...values);
-      const padding = Math.max((max - min) * .15, max * .0002);
+      const formLower = Number($('lower').value);
+      const formUpper = Number($('upper').value);
+      const formGridCount = Number($('grid-count').value);
+      const botConfig = state.bot?.config;
+      const lower = formUpper > formLower && formLower > 0 ? formLower : Number(botConfig?.lower);
+      const upper = formUpper > formLower && formLower > 0 ? formUpper : Number(botConfig?.upper);
+      const gridCount = Number.isInteger(formGridCount) && formGridCount >= 2
+        ? formGridCount
+        : Number(botConfig?.gridCount);
+      const hasGrid = upper > lower && Number.isInteger(gridCount) && gridCount >= 2;
+      const gridSpacing = hasGrid ? (upper - lower) / gridCount : 0;
+      const gridLevels = hasGrid
+        ? Array.from({ length: gridCount + 1 }, (_, index) => lower + gridSpacing * index)
+        : [];
+      let min = Math.min(...values, ...(hasGrid ? [lower] : []));
+      let max = Math.max(...values, ...(hasGrid ? [upper] : []));
+      const padding = Math.max((max - min) * (hasGrid ? .025 : .15), max * .0002);
       min -= padding; max += padding;
       const left = 16, right = 68, top = 14, bottom = 24;
       const width = rect.width - left - right, height = rect.height - top - bottom;
-      ctx.strokeStyle = '#e5eae7'; ctx.lineWidth = 1;
       ctx.fillStyle = '#78817e'; ctx.font = '10px ui-sans-serif'; ctx.textAlign = 'left';
-      for (let i = 0; i <= 4; i++) {
-        const y = top + height * i / 4;
-        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
-        const label = max - (max - min) * i / 4;
-        ctx.fillText(money(label), left + width + 8, y + 3);
+      if (hasGrid) {
+        const labelStep = Math.max(1, Math.ceil(gridCount / 8));
+        gridLevels.forEach((level, index) => {
+          const y = top + height - ((level - min) / (max - min)) * height;
+          const boundary = index === 0 || index === gridCount;
+          ctx.strokeStyle = boundary ? '#9aaba5' : '#dfe6e2';
+          ctx.lineWidth = boundary ? 1.5 : 1;
+          ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+          if (boundary || index % labelStep === 0) {
+            ctx.fillStyle = boundary ? '#505b57' : '#78817e';
+            ctx.fillText(money(level), left + width + 8, y + 3);
+          }
+        });
+      } else {
+        ctx.strokeStyle = '#e5eae7'; ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+          const y = top + height * i / 4;
+          ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+          const label = max - (max - min) * i / 4;
+          ctx.fillText(money(label), left + width + 8, y + 3);
+        }
       }
       ctx.beginPath();
       points.forEach((point, index) => {
