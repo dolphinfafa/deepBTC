@@ -1,0 +1,1400 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GridPilot</title>
+  <style>
+    :root {
+      --ink: #18201f;
+      --muted: #66706d;
+      --line: #d9dfdc;
+      --soft: #f2f5f3;
+      --paper: #fbfcfb;
+      --white: #ffffff;
+      --green: #167a5b;
+      --green-soft: #e3f3ed;
+      --coral: #c8533f;
+      --coral-soft: #f9e9e5;
+      --cyan: #18748c;
+      --amber: #a96b18;
+      --shadow: 0 12px 35px rgba(24, 32, 31, 0.08);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--paper); }
+    button, input, select { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    .shell { width: min(1480px, calc(100% - 40px)); margin: 0 auto; }
+    .topbar { position: sticky; top: 0; z-index: 20; background: rgba(251,252,251,.96); border-bottom: 1px solid var(--line); backdrop-filter: blur(14px); }
+    .topbar-inner { min-height: 68px; display: flex; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 210px; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: var(--ink); color: white; font-weight: 850; }
+    .brand strong { display: block; font-size: 16px; }
+    .brand small { color: var(--muted); font-size: 11px; }
+    .top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+    .pill { min-height: 28px; padding: 5px 9px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 11px; font-weight: 750; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8b9491; }
+    .pill.live { background: var(--coral-soft); color: var(--coral); border-color: #efc8bf; }
+    .pill.live::before { background: var(--coral); }
+    .pill.paper { background: var(--green-soft); color: var(--green); border-color: #b8ddcf; }
+    .pill.paper::before { background: var(--green); }
+    .pill.connected::before { background: var(--green); }
+    .icon-btn { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 7px; background: var(--white); color: var(--ink); display: grid; place-items: center; font-size: 18px; }
+    .icon-btn:hover { border-color: #aeb8b4; background: var(--soft); }
+    .live-banner { display: none; background: var(--coral); color: white; text-align: center; padding: 8px 16px; font-size: 12px; font-weight: 800; }
+    .live-banner.show { display: block; }
+    main { padding: 28px 0 42px; }
+    .market-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 20px; margin-bottom: 22px; }
+    .eyebrow { margin: 0 0 6px; color: var(--green); font-weight: 800; font-size: 11px; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(28px, 3vw, 44px); line-height: 1; font-weight: 850; }
+    .price-line { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+    .last-price { font-size: 21px; font-variant-numeric: tabular-nums; font-weight: 750; }
+    .health { font-size: 12px; color: var(--muted); }
+    .market-picker label { display: block; color: var(--muted); font-size: 11px; font-weight: 750; margin-bottom: 6px; }
+    select, input { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 6px; background: var(--white); color: var(--ink); padding: 0 11px; outline: none; }
+    select:focus, input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(22,122,91,.12); }
+    .market-picker select { min-width: 200px; }
+    .metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .metric { background: var(--white); border: 1px solid var(--line); border-radius: 7px; min-height: 106px; padding: 16px; }
+    .metric span { color: var(--muted); font-size: 11px; font-weight: 750; }
+    .metric strong { display: block; margin-top: 10px; font-size: 21px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .positive { color: var(--green) !important; }
+    .negative { color: var(--coral) !important; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(360px, .85fr); gap: 18px; align-items: start; }
+    .safety-panel { margin-bottom: 18px; box-shadow: none; }
+    .safety-body { padding: 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: center; }
+    .safety-stats { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+    .safety-stat span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+    .safety-stat strong { font-size: 12px; font-variant-numeric: tabular-nums; }
+    .safety-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .safety-policy { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding-top: 10px; border-top: 1px solid var(--line); }
+    .safety-policy[hidden] { display: none; }
+    .safety-policy label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    .safety-policy input { width: 120px; }
+    .settings-panel { margin-bottom: 18px; box-shadow: none; }
+    .settings-body { padding: 16px 18px; }
+    .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
+    .settings-span-2 { grid-column: span 2; }
+    .connection-grid { grid-template-columns: repeat(6, minmax(0,1fr)); }
+    .connection-span-3 { grid-column: span 3; }
+    .connection-span-2 { grid-column: span 2; }
+    .settings-toggle { width: 100%; min-height: 56px; padding: 0 18px; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; list-style: none; }
+    .settings-toggle::-webkit-details-marker { display: none; }
+    .settings-toggle:hover { background: var(--soft); }
+    .settings-toggle h2 { font-size: 14px; margin: 0; }
+    .settings-chevron { width: 20px; height: 20px; display: grid; place-items: center; color: var(--muted); font-size: 16px; transition: transform .18s ease; }
+    .settings-panel:not([open]) .panel-head { border-bottom: 0; }
+    .settings-panel:not([open]) .settings-chevron { transform: rotate(-90deg); }
+    .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .settings-actions .inline-check { margin-right: auto; }
+    .inline-check { min-height: 40px; display: inline-flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; font-weight: 750; }
+    .inline-check input { width: 17px; height: 17px; margin: 0; accent-color: var(--green); }
+    .settings-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .settings-summary div { min-width: 0; padding: 11px 12px; border-right: 1px solid var(--line); }
+    .settings-summary div:last-child { border-right: 0; }
+    .settings-summary span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
+    .settings-summary strong { display: block; font-size: 12px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .rescue-panel { display: none; margin-bottom: 18px; border-color: #e4bbb2; box-shadow: none; }
+    .rescue-panel.show { display: block; }
+    .rescue-body { padding: 16px 18px; display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+    .rescue-copy strong { display: block; color: var(--coral); font-size: 13px; margin-bottom: 5px; }
+    .rescue-copy span { color: var(--muted); font-size: 11px; }
+    .rescue-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .check-list { margin-top: 16px; border-top: 1px solid var(--line); }
+    .check-row { display: grid; grid-template-columns: 22px 130px minmax(0,1fr); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 11px; align-items: start; }
+    .check-icon { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); color: var(--muted); font-weight: 800; }
+    .check-row.pass .check-icon { background: var(--green-soft); color: var(--green); }
+    .check-row.fail .check-icon { background: var(--coral-soft); color: var(--coral); }
+    .check-row.warn .check-icon { background: #fff2d9; color: var(--amber); }
+    .check-detail { color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+    .panel { background: var(--white); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+    .panel-head { min-height: 56px; padding: 0 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+    .panel-head h2 { font-size: 14px; margin: 0; }
+    .panel-head .push { margin-left: auto; }
+    .panel-body { padding: 18px; }
+    .chart-wrap { height: 320px; position: relative; }
+    #price-chart { width: 100%; height: 100%; display: block; }
+    .chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; pointer-events: none; }
+    .trend-strip { border-top: 1px solid var(--line); display: grid; grid-template-columns: 120px 120px minmax(0,1fr); }
+    .trend-cell { min-height: 76px; padding: 13px 16px; border-right: 1px solid var(--line); }
+    .trend-cell:last-child { border-right: 0; }
+    .trend-cell span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 6px; }
+    .trend-cell strong { font-size: 13px; }
+    .trend-detail { color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .segmented { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--soft); border: 1px solid var(--line); border-radius: 7px; padding: 3px; gap: 3px; }
+    .segmented button { height: 34px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-weight: 750; font-size: 12px; }
+    .segmented button.active { background: var(--white); color: var(--ink); box-shadow: 0 1px 4px rgba(24,32,31,.12); }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin-top: 15px; }
+    .field label { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 750; margin-bottom: 6px; }
+    .field label small { color: #8d9693; font-weight: 500; }
+    .span-2 { grid-column: span 2; }
+    .quick-row { display: flex; gap: 8px; margin-top: 14px; }
+    .btn { min-height: 40px; border: 1px solid var(--line); border-radius: 6px; padding: 0 13px; background: var(--white); color: var(--ink); font-weight: 780; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+    .btn:hover { border-color: #aab5b1; background: var(--soft); }
+    .btn.primary { background: var(--green); border-color: var(--green); color: white; }
+    .btn.primary:hover { background: #106b4f; }
+    .btn.danger { color: var(--coral); border-color: #e4bbb2; background: var(--coral-soft); }
+    .btn.small { min-height: 32px; padding: 0 10px; font-size: 11px; }
+    .btn:disabled { cursor: not-allowed; opacity: .5; }
+    .action-main { width: 100%; min-height: 48px; margin-top: 16px; font-size: 13px; }
+    .secondary-actions { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 8px; }
+    .status-box { margin-top: 12px; padding: 10px 12px; min-height: 38px; border-radius: 6px; background: var(--soft); color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .lower-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,.85fr); gap: 18px; margin-top: 18px; }
+    .data-table { width: 100%; border-collapse: collapse; }
+    .data-table th, .data-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
+    .data-table th { color: var(--muted); font-weight: 750; }
+    .data-table td { font-variant-numeric: tabular-nums; }
+    .data-table tr:last-child td { border-bottom: 0; }
+    .grid-visual { padding: 16px; height: 236px; display: flex; gap: 16px; }
+    .ladder { flex: 1; display: flex; flex-direction: column-reverse; justify-content: space-between; padding: 4px 0; }
+    .rung { height: 1px; background: var(--line); position: relative; }
+    .rung.buy::after, .rung.sell::after { content: ""; width: 8px; height: 8px; border-radius: 50%; position: absolute; right: 5%; top: -4px; }
+    .rung.buy::after { background: var(--green); }
+    .rung.sell::after { background: var(--coral); }
+    .price-pointer { width: 90px; display: flex; flex-direction: column; justify-content: space-between; color: var(--muted); font-size: 10px; text-align: right; }
+    .activity { margin-top: 18px; }
+    .log-list { max-height: 260px; overflow: auto; }
+    .log-item { display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
+    .log-item:last-child { border-bottom: 0; }
+    .log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .empty-row { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 11px; }
+    .toast { position: fixed; right: 18px; bottom: 18px; max-width: min(390px, calc(100% - 36px)); padding: 12px 15px; border-radius: 7px; color: white; background: var(--ink); box-shadow: var(--shadow); font-size: 12px; transform: translateY(20px); opacity: 0; pointer-events: none; transition: .2s ease; z-index: 40; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.error { background: var(--coral); }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(24,32,31,.46); display: none; place-items: center; padding: 18px; z-index: 30; }
+    .modal-backdrop.show { display: grid; }
+    .modal { width: min(480px,100%); background: var(--white); border-radius: 8px; box-shadow: 0 24px 70px rgba(0,0,0,.24); overflow: hidden; }
+    .modal .panel-head { justify-content: space-between; }
+    .modal-copy { color: var(--muted); font-size: 12px; line-height: 1.65; margin: 0; }
+    .modal-grid { display: grid; grid-template-columns: 120px 1fr; margin-top: 18px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .modal-grid span { padding: 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
+    .modal-grid span:nth-last-child(-n+2) { border-bottom: 0; }
+    .modal-grid span:nth-child(odd) { color: var(--muted); background: var(--soft); }
+    @media (max-width: 1100px) {
+      .metrics { grid-template-columns: repeat(3,1fr); }
+      .workspace { grid-template-columns: 1fr; }
+      .lower-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .shell { width: min(100% - 24px, 1480px); }
+      .topbar-inner { min-height: 62px; }
+      .brand { min-width: 0; }
+      .brand small, #connection-pill, #network-pill { display: none; }
+      main { padding-top: 20px; }
+      .market-head { grid-template-columns: 1fr; align-items: start; }
+      .market-picker select { min-width: 0; }
+      .metrics { grid-template-columns: repeat(2,1fr); }
+      .metric { min-height: 92px; padding: 13px; }
+      .metric strong { font-size: 17px; }
+      .chart-wrap { height: 250px; }
+      .trend-strip { grid-template-columns: 1fr 1fr; }
+      .trend-cell:nth-child(2) { border-right: 0; }
+      .trend-cell:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+      .secondary-actions { grid-template-columns: 1fr; }
+      .safety-body, .rescue-body { grid-template-columns: 1fr; display: grid; }
+      .safety-actions, .rescue-actions { justify-content: stretch; }
+      .safety-actions .btn, .rescue-actions .btn { flex: 1; }
+      .settings-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .connection-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .connection-span-3, .connection-span-2 { grid-column: span 1; }
+      .settings-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .settings-summary div:nth-child(2) { border-right: 0; }
+      .settings-summary div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .check-row { grid-template-columns: 22px 92px minmax(0,1fr); }
+      .log-item { grid-template-columns: 64px 1fr; }
+    }
+    @media (max-width: 440px) {
+      .settings-grid { grid-template-columns: 1fr; }
+      .settings-span-2 { grid-column: auto; }
+      .connection-grid { grid-template-columns: 1fr; }
+      .connection-span-3, .connection-span-2 { grid-column: auto; }
+      .settings-actions { justify-content: stretch; }
+      .settings-actions .inline-check { width: 100%; margin-right: 0; }
+      .settings-actions .btn { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div id="live-banner" class="live-banner">实盘已解锁 · 所有订单会发送到 Decibel 主网</div>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">
+        <div class="brand-mark">GP</div>
+        <div><strong id="brand-name">GridPilot</strong><small id="owner-name">个人版 · Decibel</small></div>
+      </div>
+      <div class="top-meta">
+        <span id="mode-pill" class="pill paper">PAPER</span>
+        <span id="network-pill" class="pill">MAINNET</span>
+        <span id="ai-pill" class="pill" title="AI 助手连接状态">AI 未配置</span>
+        <span id="connection-pill" class="pill">连接中</span>
+        <button class="icon-btn" id="reconnect-btn" title="重新连接" aria-label="重新连接">↻</button>
+        <button class="icon-btn" id="about-btn" title="运行信息" aria-label="运行信息">i</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="market-head">
+      <div>
+        <p class="eyebrow">Decibel perpetual grid</p>
+        <h1 id="market-title">BTC-USD</h1>
+        <div class="price-line"><span id="last-price" class="last-price">--</span><span id="health-text" class="health">等待行情</span></div>
+      </div>
+      <div class="market-picker">
+        <label for="market-select">交易市场</label>
+        <select id="market-select"></select>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="账户概览">
+      <div class="metric"><span>账户权益</span><strong id="metric-equity">--</strong><small>USDC</small></div>
+      <div class="metric"><span>总盈亏</span><strong id="metric-pnl">--</strong><small id="metric-return">收益率 --</small></div>
+      <div class="metric"><span>已实现</span><strong id="metric-realized">--</strong><small>USDC</small></div>
+      <div class="metric"><span>未实现</span><strong id="metric-unrealized">--</strong><small id="metric-unrealized-note">等待持仓</small></div>
+      <div class="metric"><span>完成格数</span><strong id="metric-rungs">0</strong><small id="metric-volume">成交额 --</small></div>
+      <div class="metric"><span>挂单</span><strong id="metric-orders">0</strong><small id="metric-order-sync">交易所 --</small></div>
+    </section>
+
+    <section class="panel safety-panel">
+      <header class="panel-head"><h2>实盘安全</h2><span id="preflight-badge" class="pill push">未预检</span></header>
+      <div class="safety-body">
+        <div class="safety-stats">
+          <div class="safety-stat"><span>日内亏损</span><strong id="risk-daily-loss">--</strong></div>
+          <div class="safety-stat"><span>权益回撤</span><strong id="risk-drawdown">--</strong></div>
+          <div class="safety-stat"><span>通知</span><strong id="notify-state">--</strong></div>
+        </div>
+        <div class="safety-actions">
+          <button id="preflight-btn" class="btn">实盘预检</button>
+          <button id="risk-reset-btn" class="btn">重置风险</button>
+          <button id="risk-policy-btn" class="btn">调整上限</button>
+          <button id="emergency-btn" class="btn danger">紧急停止</button>
+        </div>
+        <div id="risk-policy-form" class="safety-policy" hidden>
+          <label>杠杆上限 (倍)<input id="policy-max-leverage" type="number" min="1" max="50" step="1"></label>
+          <label>网格数量上限 <small>0=动态</small><input id="policy-max-grids" type="number" min="0" max="200" step="1"></label>
+          <label>名义金额上限 <small>0=动态</small><input id="policy-max-notional" type="number" min="0" step="1"></label>
+          <label>保证金占比上限 (%)<input id="policy-margin-pct" type="number" min="1" max="100" step="1"></label>
+          <label>维持保证金率下限 (%)<input id="policy-maintenance-ratio" type="number" min="100" step="10"></label>
+          <label>日内亏损上限 (USDC)<input id="policy-daily-loss" type="number" min="1" step="1"></label>
+          <label>权益回撤上限 (%)<input id="policy-drawdown" type="number" min="0.1" max="100" step="0.1"></label>
+          <button id="risk-policy-save" class="btn">保存上限</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="rescue-panel" class="panel rescue-panel">
+      <div class="rescue-body">
+        <div class="rescue-copy"><strong>检测到未托管持仓</strong><span id="rescue-detail">--</span></div>
+        <div class="rescue-actions">
+          <button id="recovery-btn" class="btn">只减仓回收</button>
+          <button id="regrid-btn" class="btn">按当前参数重开</button>
+          <button id="orphan-close-btn" class="btn danger">市价平仓</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <article class="panel">
+        <header class="panel-head"><h2>价格轨迹</h2><button id="trend-btn" class="btn small push">刷新趋势</button></header>
+        <div class="panel-body chart-wrap">
+          <canvas id="price-chart"></canvas>
+          <div id="chart-empty" class="chart-empty">等待价格数据</div>
+        </div>
+        <div class="trend-strip">
+          <div class="trend-cell"><span>行情结构</span><strong id="trend-name">--</strong></div>
+          <div class="trend-cell"><span>ATR 波动率</span><strong id="trend-atr">--</strong></div>
+          <div class="trend-cell"><span>模型摘要</span><div id="trend-detail" class="trend-detail">尚未分析</div></div>
+        </div>
+      </article>
+
+      <aside class="panel">
+        <header class="panel-head"><h2>网格参数</h2><span id="run-state" class="pill push">未运行</span></header>
+        <div class="panel-body">
+          <div id="mode-control" class="segmented" aria-label="网格方向">
+            <button data-mode="neutral" class="active">中性</button>
+            <button data-mode="long">做多</button>
+            <button data-mode="short">做空</button>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="lower">下边界 <small>USDC</small></label><input id="lower" type="number" min="0" step="any"></div>
+            <div class="field"><label for="upper">上边界 <small>USDC</small></label><input id="upper" type="number" min="0" step="any"></div>
+            <div class="field"><label for="grid-count">网格数量 <small>2-100</small></label><input id="grid-count" type="number" min="2" max="100" value="12"></div>
+            <div class="field"><label for="size-base">每格数量 <small>币</small></label><input id="size-base" type="number" min="0" step="any"></div>
+            <div class="field"><label for="leverage">杠杆 <small>倍</small></label><input id="leverage" type="number" min="1" max="50" value="3"></div>
+            <div class="field"><label for="oor-action">出区间动作</label><select id="oor-action"><option value="close">撤单并平仓</option><option value="recover">只减仓回收</option></select></div>
+          </div>
+          <div class="quick-row">
+            <button id="smart-btn" class="btn">自动参数</button>
+            <button id="conservative-btn" class="btn">稳健</button>
+          </div>
+          <button id="start-btn" class="btn primary action-main">启动网格</button>
+          <div class="secondary-actions">
+            <button id="adjust-btn" class="btn">调整区间</button>
+            <button id="cancel-btn" class="btn">撤销挂单</button>
+            <button id="stop-btn" class="btn danger">停止并平仓</button>
+          </div>
+          <div id="action-status" class="status-box">模拟盘已就绪</div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="lower-grid">
+      <article class="panel">
+        <header class="panel-head"><h2>仓位与风险</h2><button id="reset-btn" class="btn small push">重置统计</button></header>
+        <table class="data-table">
+          <thead><tr><th>项目</th><th>当前值</th><th>项目</th><th>当前值</th></tr></thead>
+          <tbody>
+            <tr><td>仓位数量</td><td id="position-size">--</td><td>持仓均价</td><td id="position-entry">--</td></tr>
+            <tr><td>名义价值</td><td id="risk-notional">--</td><td>预估保证金</td><td id="risk-margin">--</td></tr>
+            <tr><td>单格毛利</td><td id="risk-rung">--</td><td>单格间距</td><td id="risk-spacing">--</td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article class="panel">
+        <header class="panel-head"><h2>网格分布</h2><span id="range-state" class="pill push">未配置</span></header>
+        <div class="grid-visual">
+          <div id="ladder" class="ladder"></div>
+          <div class="price-pointer"><span id="range-upper">--</span><span id="range-current">当前 --</span><span id="range-lower">--</span></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel activity">
+      <header class="panel-head"><h2>运行记录</h2></header>
+      <div id="log-list" class="log-list"><div class="empty-row">暂无记录</div></div>
+    </section>
+
+    <details id="connection-settings-panel" class="panel settings-panel" open>
+      <summary id="connection-settings-toggle" class="panel-head settings-toggle" aria-controls="connection-settings-body">
+        <h2>Decibel 连接</h2><span id="connection-settings-badge" class="pill push">未配置</span><span class="settings-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div id="connection-settings-body" class="settings-body">
+        <div class="settings-grid connection-grid">
+          <div class="field connection-span-3"><label for="connection-api-key">Geomi API Key <small id="connection-api-state">未配置</small></label><input id="connection-api-key" type="password" autocomplete="new-password" placeholder="输入新值，留空保持现有设置"></div>
+          <div class="field connection-span-3"><label for="connection-private-key">API 钱包私钥 <small id="connection-private-state">未配置</small></label><input id="connection-private-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
+          <div class="field connection-span-2"><label for="connection-subaccount">Trading Account <small id="connection-account-state">未配置</small></label><input id="connection-subaccount" type="password" autocomplete="off" placeholder="0x..."></div>
+          <div class="field connection-span-2"><label for="connection-network">目标网络</label><select id="connection-network"><option value="mainnet">Mainnet</option><option value="testnet">Testnet</option></select></div>
+          <div class="field connection-span-2"><label for="connection-mode">重启后模式</label><select id="connection-mode"><option value="paper">模拟盘</option><option value="live">实盘</option></select></div>
+          <div class="field connection-span-3"><label for="connection-proxy">网络代理 <small id="connection-proxy-state">未配置</small></label><input id="connection-proxy" type="password" autocomplete="off" placeholder="http://host:port 或 socks5://user:pass@host:port"></div>
+        </div>
+        <div class="settings-summary">
+          <div><span>当前模式</span><strong id="connection-effective-mode">--</strong></div>
+          <div><span>当前网络</span><strong id="connection-effective-network">--</strong></div>
+          <div><span>目标模式</span><strong id="connection-target-mode">--</strong></div>
+          <div><span>应用状态</span><strong id="connection-apply-state">--</strong></div>
+        </div>
+        <div class="settings-actions">
+          <button id="connection-save-btn" class="btn primary">保存连接设置</button>
+          <button id="connection-restart-btn" class="btn">重启模拟盘</button>
+          <button id="proxy-check-btn" class="btn">检测出口 IP</button>
+        </div>
+      </div>
+    </details>
+
+    <details id="notification-settings-panel" class="panel settings-panel" open>
+      <summary id="notification-settings-toggle" class="panel-head settings-toggle" aria-controls="notification-settings-body">
+        <h2>每日盈亏通知</h2><span id="daily-report-badge" class="pill push">未开启</span><span class="settings-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div id="notification-settings-body" class="settings-body">
+        <div class="settings-grid">
+          <div class="field settings-span-2"><label for="telegram-token">Telegram Bot Token <small id="telegram-token-state">未配置</small></label><input id="telegram-token" type="password" autocomplete="new-password" placeholder="输入新值，留空保持现有 Token"></div>
+          <div class="field"><label for="telegram-chat-id">TG ID</label><input id="telegram-chat-id" type="text" inputmode="numeric" autocomplete="off" placeholder="例如 -1001234567890"></div>
+          <div class="field"><label for="daily-time">发送时间</label><input id="daily-time" type="time" value="23:55"></div>
+          <div class="field settings-span-2"><label for="daily-timezone">统计时区</label><select id="daily-timezone"><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option><option value="Europe/London">Europe/London</option></select></div>
+        </div>
+        <div class="settings-summary">
+          <div><span>日初权益</span><strong id="daily-baseline">--</strong></div>
+          <div><span>当前权益</span><strong id="daily-current">--</strong></div>
+          <div><span>当日盈亏</span><strong id="daily-pnl">--</strong></div>
+          <div><span>推送时间</span><strong id="daily-schedule">--</strong></div>
+        </div>
+        <div class="settings-actions">
+          <label class="inline-check" for="daily-enabled"><input id="daily-enabled" type="checkbox">开启每日推送</label>
+          <button id="notification-save-btn" class="btn primary">保存通知设置</button>
+          <button id="notify-test-btn" class="btn">测试通知</button>
+          <button id="daily-send-btn" class="btn">立即发送日报</button>
+        </div>
+      </div>
+    </details>
+
+    <details id="ai-settings-panel" class="panel settings-panel">
+      <summary class="panel-head settings-toggle" aria-controls="ai-settings-body">
+        <h2>AI 助手</h2><span id="ai-settings-badge" class="pill push">未配置</span><span class="settings-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div id="ai-settings-body" class="settings-body">
+        <div class="settings-grid">
+          <div class="field"><label for="ai-provider">提供商</label><select id="ai-provider"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select></div>
+          <div class="field settings-span-2"><label for="ai-base-url">Base URL</label><input id="ai-base-url" type="url" placeholder="留空使用提供商默认地址"></div>
+          <div class="field"><label for="ai-model">模型</label><input id="ai-model" type="text" placeholder="默认 gpt-5.6-terra"></div>
+          <div class="field"><label for="ai-model-small">小模型</label><input id="ai-model-small" type="text" placeholder="用于低成本分析"></div>
+          <div class="field"><label for="ai-sentinel-minutes">风控巡检间隔（分钟）</label><input id="ai-sentinel-minutes" type="number" min="0" max="1440" value="5"></div>
+          <div class="field"><label for="ai-market-minutes">市况分析间隔（分钟）</label><input id="ai-market-minutes" type="number" min="0" max="1440" value="30"></div>
+          <div class="field"><label for="ai-report-hour">AI 复盘小时</label><input id="ai-report-hour" type="number" min="-1" max="23" value="20"></div>
+          <div class="field settings-span-2"><label for="ai-api-key">API Key <small id="ai-key-state">未配置</small></label><input id="ai-api-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
+        </div>
+        <div class="settings-actions">
+          <button id="ai-save-btn" class="btn primary">保存 AI 设置</button>
+          <button id="ai-test-btn" class="btn">测试连接</button>
+          <button id="ai-analyze-btn" class="btn">分析当前市场</button>
+          <button id="ai-apply-analysis-btn" class="btn" hidden>采用分析参数</button>
+          <button id="ai-sentinel-btn" class="btn">风控巡检</button>
+          <button id="ai-report-btn" class="btn">生成复盘</button>
+        </div>
+        <div id="ai-analysis" class="status-box">配置后可生成多周期网格建议。</div>
+        <div class="settings-grid" style="margin-top:12px">
+          <div class="field settings-span-2"><label for="ai-question">向助手提问</label><input id="ai-question" type="text" placeholder="例如：当前网格有哪些风险？"></div>
+        </div>
+        <div class="settings-actions"><button id="ai-chat-btn" class="btn">发送问题</button><button id="ai-apply-action-btn" class="btn primary" hidden>确认执行建议</button></div>
+        <div id="ai-answer" class="status-box">AI 只提供分析建议，不会自动执行交易。</div>
+      </div>
+    </details>
+  </main>
+
+  <div id="about-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="about-title">
+    <div class="modal">
+      <header class="panel-head"><h2 id="about-title">运行信息</h2><button id="about-close" class="icon-btn" aria-label="关闭">×</button></header>
+      <div class="panel-body">
+        <p class="modal-copy">GridPilot 仅连接 Decibel。交易快回路由固定规则处理，默认运行于模拟盘。</p>
+        <div class="modal-grid">
+          <span>版本</span><span id="about-version">--</span>
+          <span>网络</span><span id="about-network">--</span>
+          <span>数据源</span><span id="about-source">--</span>
+          <span>自动恢复</span><span id="about-resume">--</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="preflight-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="preflight-title">
+    <div class="modal">
+      <header class="panel-head"><h2 id="preflight-title">实盘预检</h2><button id="preflight-close" class="icon-btn" aria-label="关闭">×</button></header>
+      <div class="panel-body">
+        <p id="preflight-summary" class="modal-copy">检查交易连接、凭据、账户、风险锁和遗留订单。</p>
+        <div id="preflight-list" class="check-list"></div>
+      </div>
+    </div>
+  </div>
+  <div id="confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal">
+      <header class="panel-head"><h2 id="confirm-title">确认操作</h2><button id="confirm-close" class="icon-btn" aria-label="关闭">×</button></header>
+      <div class="panel-body">
+        <p id="confirm-message" class="modal-copy"></p>
+        <div id="confirm-input-wrap" class="field" hidden><label for="confirm-input">确认短语</label><input id="confirm-input" type="text" autocomplete="off"></div>
+        <div class="settings-actions"><button id="confirm-cancel" class="btn">取消</button><button id="confirm-ok" class="btn danger">确认</button></div>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const queryToken = new URLSearchParams(location.search).get('token');
+    if (queryToken) sessionStorage.setItem('gridpilot-token', queryToken);
+    const token = sessionStorage.getItem('gridpilot-token') || '';
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], prices: [], mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
+
+    function apiUrl(path) {
+      const url = new URL(path, location.origin);
+      if (token) url.searchParams.set('token', token);
+      return url.pathname + url.search;
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(apiUrl(path), {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'X-GridPilot-Token': token } : {}), ...(options.headers || {}) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      return body;
+    }
+
+    async function init() {
+      bindEvents();
+      await refreshAll();
+      connectStream();
+    }
+
+    async function refreshAll() {
+      try {
+        const [app, connection, notification, ai] = await Promise.all([
+          request('/api/app'),
+          request('/api/connection-settings'),
+          request('/api/notification-settings'),
+          request('/api/ai-config'),
+        ]);
+        state.app = app;
+        state.connection = connection;
+        state.notification = notification;
+        state.ai = ai;
+        renderApp();
+        renderConnectionSettings(connection);
+        renderNotificationSettings(notification);
+        renderAiSettings(ai);
+        await loadMarkets();
+        await loadTrend();
+        state.bot = await request('/api/state');
+        renderState(state.bot);
+      } catch (error) {
+        showToast(error.message, true);
+        $('action-status').textContent = error.message;
+      }
+    }
+
+    function bindEvents() {
+      $('market-select').addEventListener('change', async () => {
+        state.market = state.markets.find((market) => String(market.marketId) === $('market-select').value);
+        renderMarket();
+        await loadTrend();
+      });
+      $('mode-control').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-mode]');
+        if (!button) return;
+        state.formDirty = true;
+        state.mode = button.dataset.mode;
+        document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
+      });
+      ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
+        $(id).addEventListener('input', () => { state.formDirty = true; });
+      });
+      $('trend-btn').addEventListener('click', loadTrend);
+      $('smart-btn').addEventListener('click', runSmartFill);
+      $('conservative-btn').addEventListener('click', () => fillSuggested(true));
+      $('start-btn').addEventListener('click', startGrid);
+      $('adjust-btn').addEventListener('click', adjustGrid);
+      $('cancel-btn').addEventListener('click', () => confirmAction('撤销全部挂单并停止网格？当前持仓会保留。', '/api/cancel-orders'));
+      $('stop-btn').addEventListener('click', () => confirmAction('停止网格、撤销挂单并平仓？', '/api/stop', { closePosition: true }));
+      $('reset-btn').addEventListener('click', () => confirmAction('重置盈亏、成交额和完成格数统计？', '/api/reset'));
+      $('reconnect-btn').addEventListener('click', () => action('/api/reconnect', {}));
+      $('preflight-btn').addEventListener('click', runPreflight);
+      $('notify-test-btn').addEventListener('click', testNotification);
+      $('daily-send-btn').addEventListener('click', sendDailyReport);
+      $('notification-save-btn').addEventListener('click', saveNotificationSettings);
+      $('ai-save-btn').addEventListener('click', saveAiSettings);
+      $('ai-test-btn').addEventListener('click', testAiConnection);
+      $('ai-analyze-btn').addEventListener('click', runAiAnalysis);
+      $('ai-apply-analysis-btn').addEventListener('click', applyAiSuggestion);
+      $('ai-sentinel-btn').addEventListener('click', runAiSentinel);
+      $('ai-report-btn').addEventListener('click', runAiReport);
+      $('ai-chat-btn').addEventListener('click', askAi);
+      $('ai-apply-action-btn').addEventListener('click', applyAiProposal);
+      $('ai-question').addEventListener('keydown', (event) => { if (event.key === 'Enter') askAi(); });
+      $('connection-save-btn').addEventListener('click', saveConnectionSettings);
+      $('connection-restart-btn').addEventListener('click', restartService);
+      $('proxy-check-btn').addEventListener('click', checkProxyConnection);
+      $('risk-reset-btn').addEventListener('click', resetRisk);
+      $('risk-policy-btn').addEventListener('click', () => { $('risk-policy-form').hidden = !$('risk-policy-form').hidden; });
+      $('risk-policy-save').addEventListener('click', saveRiskPolicy);
+      $('emergency-btn').addEventListener('click', emergencyStop);
+      $('recovery-btn').addEventListener('click', startRecovery);
+      $('regrid-btn').addEventListener('click', () => startGrid(true));
+      $('orphan-close-btn').addEventListener('click', closeOrphanPosition);
+      $('about-btn').addEventListener('click', () => $('about-modal').classList.add('show'));
+      $('about-close').addEventListener('click', () => $('about-modal').classList.remove('show'));
+      $('about-modal').addEventListener('click', (event) => { if (event.target === $('about-modal')) $('about-modal').classList.remove('show'); });
+      $('preflight-close').addEventListener('click', () => $('preflight-modal').classList.remove('show'));
+      $('preflight-modal').addEventListener('click', (event) => { if (event.target === $('preflight-modal')) $('preflight-modal').classList.remove('show'); });
+      $('confirm-close').addEventListener('click', () => resolveConfirmation(null));
+      $('confirm-cancel').addEventListener('click', () => resolveConfirmation(null));
+      $('confirm-ok').addEventListener('click', () => resolveConfirmation($('confirm-input-wrap').hidden ? true : $('confirm-input').value));
+      $('confirm-modal').addEventListener('click', (event) => { if (event.target === $('confirm-modal')) resolveConfirmation(null); });
+      $('confirm-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('confirm-ok').click(); });
+      window.addEventListener('resize', drawChart);
+    }
+
+    function renderApp() {
+      document.title = state.app.name;
+      $('brand-name').textContent = state.app.name;
+      $('owner-name').textContent = `${state.app.owner} · Decibel`;
+      $('mode-pill').textContent = state.app.mode.toUpperCase();
+      $('mode-pill').className = `pill ${state.app.mode}`;
+      const network = state.app.network.toUpperCase();
+      const dataNetwork = String(state.app.dataNetwork || '').toUpperCase();
+      $('network-pill').textContent = dataNetwork && dataNetwork !== network ? `${network} · 数据 ${dataNetwork}` : network;
+      const ai = state.app.ai || {};
+      $('ai-pill').textContent = ai.configured ? `AI ${ai.provider.toUpperCase()}` : 'AI 未配置';
+      $('ai-pill').className = `pill ${ai.configured ? 'connected' : ''}`;
+      $('live-banner').classList.toggle('show', state.app.mode === 'live');
+      $('about-network').textContent = `${state.app.network} / ${state.app.mode}`;
+      $('about-resume').textContent = state.app.autoResume ? '开启' : '关闭';
+      $('about-version').textContent = state.app.version;
+      $('policy-max-leverage').value = state.app.riskPolicy.maxLeverage;
+      $('policy-max-grids').value = state.app.riskPolicy.maxGridCount;
+      $('policy-max-notional').value = state.app.riskPolicy.maxNotional;
+      $('policy-margin-pct').value = state.app.riskPolicy.maxMarginPct;
+      $('policy-maintenance-ratio').value = state.app.riskPolicy.minMaintenanceMarginRatio;
+      $('policy-daily-loss').value = state.app.riskPolicy.dailyLossLimit;
+      $('policy-drawdown').value = state.app.riskPolicy.maxDrawdownPct;
+      $('notify-state').textContent = state.app.notificationsEnabled ? '已配置' : '未配置';
+      $('notify-test-btn').disabled = !state.app.notificationsEnabled;
+      $('action-status').textContent = state.app.mode === 'live' ? '实盘已解锁，请逐项核对参数' : '模拟盘已就绪，不会发送真实订单';
+    }
+
+    function renderConnectionSettings(result) {
+      const settings = result?.settings || result;
+      if (!settings) return;
+      state.connection = { settings, restartRequired: !!result?.restartRequired };
+      $('connection-network').value = settings.targetNetwork || 'mainnet';
+      $('connection-mode').value = settings.targetMode || 'paper';
+      $('connection-api-state').textContent = settings.hasApiKey ? settings.apiKeyMask : '未配置';
+      $('connection-private-state').textContent = settings.hasPrivateKey ? settings.privateKeyMask : '未配置';
+      $('connection-account-state').textContent = settings.hasSubaccount ? settings.subaccountMask : '未配置';
+      $('connection-proxy-state').textContent = settings.hasProxy ? settings.proxyMask : '未配置';
+      $('connection-effective-mode').textContent = settings.effectiveMode === 'live' ? '实盘' : '模拟盘';
+      $('connection-effective-network').textContent = String(settings.effectiveNetwork || '--').toUpperCase();
+      $('connection-target-mode').textContent = settings.targetMode === 'live' ? '实盘' : '模拟盘';
+      const changed = !!result?.restartRequired || settings.targetMode !== settings.effectiveMode || settings.targetNetwork !== settings.effectiveNetwork;
+      $('connection-apply-state').textContent = changed ? '等待重启' : '已生效';
+      $('connection-settings-badge').textContent = changed ? '重启生效' : (settings.hasApiKey ? '已配置' : '未配置');
+      $('connection-settings-badge').className = `pill push ${changed ? 'live' : (settings.hasApiKey ? 'paper' : '')}`;
+      if (!state.settingsInitialized.connection) {
+        setSettingsCollapsed('connection', settings.hasApiKey && settings.hasPrivateKey && settings.hasSubaccount);
+        state.settingsInitialized.connection = true;
+      }
+    }
+
+    function renderAiSettings(result) {
+      const settings = result?.settings || {};
+      const config = result?.config || state.app?.ai || {};
+      state.ai = result;
+      $('ai-provider').value = settings.provider || config.provider || 'openai';
+      $('ai-base-url').value = settings.baseUrl || config.baseUrl || '';
+      $('ai-model').value = settings.model || config.model || '';
+      $('ai-model-small').value = settings.modelSmall || config.modelSmall || '';
+      $('ai-sentinel-minutes').value = settings.sentinelMinutes ?? config.sentinelMinutes ?? 5;
+      $('ai-market-minutes').value = settings.marketMinutes ?? config.marketMinutes ?? 30;
+      $('ai-report-hour').value = settings.reportHour ?? config.reportHour ?? 20;
+      $('ai-key-state').textContent = settings.hasApiKey || config.configured ? '已配置' : '未配置';
+      $('ai-settings-badge').textContent = config.configured ? '已配置' : '未配置';
+      $('ai-settings-badge').className = `pill push ${config.configured ? 'paper' : ''}`;
+      $('ai-analyze-btn').disabled = !config.configured;
+      $('ai-chat-btn').disabled = !config.configured;
+      $('ai-test-btn').disabled = !config.configured;
+      $('ai-sentinel-btn').disabled = !config.configured;
+      $('ai-report-btn').disabled = !config.configured;
+    }
+
+    async function saveAiSettings() {
+      setBusyButton($('ai-save-btn'), true, '保存中');
+      try {
+        const result = await request('/api/ai-config', {
+          method: 'POST',
+          body: JSON.stringify({
+            provider: $('ai-provider').value,
+            baseUrl: $('ai-base-url').value.trim(),
+            model: $('ai-model').value.trim(),
+            modelSmall: $('ai-model-small').value.trim(),
+            sentinelMinutes: Number($('ai-sentinel-minutes').value),
+            marketMinutes: Number($('ai-market-minutes').value),
+            reportHour: Number($('ai-report-hour').value),
+            apiKey: $('ai-api-key').value.trim(),
+          }),
+        });
+        $('ai-api-key').value = '';
+        state.app.ai = result.config;
+        renderAiSettings(result);
+        renderApp();
+        showToast('AI 设置已保存');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('ai-save-btn'), false, '保存 AI 设置'); }
+    }
+
+    async function runAiAnalysis() {
+      setBusyButton($('ai-analyze-btn'), true, '分析中');
+      $('ai-analysis').textContent = '正在读取多周期行情并生成建议…';
+      try {
+        const result = await request('/api/ai-analyze', { method: 'POST', body: JSON.stringify({ marketId: state.market?.marketId }) });
+        state.aiSuggestion = result;
+        $('ai-apply-analysis-btn').hidden = false;
+        $('ai-analysis').textContent = `${result.regime || '未知市况'} · ${result.suitable ? '适合网格' : '暂不适合网格'} · 建议 ${result.mode || '--'}，区间 ${money(result.lower)} - ${money(result.upper)}，${result.gridCount || '--'} 格。${result.reasoning || ''} ${result.caution || ''}`;
+      } catch (error) { $('ai-analysis').textContent = error.message; showToast(error.message, true); }
+      finally { setBusyButton($('ai-analyze-btn'), false, '分析当前市场'); }
+    }
+
+    async function testAiConnection() {
+      setBusyButton($('ai-test-btn'), true, '测试中');
+      try {
+        const result = await request('/api/ai-test', { method: 'POST', body: '{}' });
+        $('ai-analysis').textContent = `${result.provider} / ${result.model} · ${result.ms}ms · ${result.reply}`;
+        showToast('AI 连接正常');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('ai-test-btn'), false, '测试连接'); }
+    }
+
+    function applyAiSuggestion() {
+      const result = state.aiSuggestion;
+      if (!result) return;
+      state.formDirty = true;
+      state.mode = ['neutral', 'long', 'short'].includes(result.mode) ? result.mode : 'neutral';
+      document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
+      if (Number(result.lower) > 0) $('lower').value = trimNumber(result.lower, 8);
+      if (Number(result.upper) > Number(result.lower)) $('upper').value = trimNumber(result.upper, 8);
+      if (Number(result.gridCount) >= 2) $('grid-count').value = Math.min(100, Math.round(result.gridCount));
+      if (Number(result.sizeBase) > 0) $('size-base').value = trimNumber(result.sizeBase, 8);
+      $('action-status').textContent = '已采用 AI 建议参数，请人工核对后启动。';
+      showToast('AI 参数已填入');
+    }
+
+    async function runSmartFill() {
+      if (state.app?.ai?.configured) {
+        await runAiAnalysis();
+        if (state.aiSuggestion) applyAiSuggestion();
+      } else fillSuggested(false);
+    }
+
+    async function runAiSentinel() {
+      setBusyButton($('ai-sentinel-btn'), true, '巡检中');
+      try {
+        const result = await request('/api/ai-sentinel', { method: 'POST', body: '{}' });
+        $('ai-analysis').textContent = `风控 ${String(result.level || 'warn').toUpperCase()}：${result.summary || ''} ${result.advice || ''}`;
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('ai-sentinel-btn'), false, '风控巡检'); }
+    }
+
+    async function runAiReport() {
+      setBusyButton($('ai-report-btn'), true, '生成中');
+      try {
+        const result = await request('/api/ai-report', { method: 'POST', body: '{}' });
+        $('ai-answer').textContent = result.text || 'AI 未返回复盘。';
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('ai-report-btn'), false, '生成复盘'); }
+    }
+
+    async function askAi() {
+      const message = $('ai-question').value.trim();
+      if (!message) return;
+      setBusyButton($('ai-chat-btn'), true, '思考中');
+      try {
+        const result = await request('/api/ai-chat', { method: 'POST', body: JSON.stringify({ message }) });
+        $('ai-answer').textContent = result.reply || 'AI 未返回内容。';
+        state.aiProposal = result.action?.type && result.action.type !== 'none' ? result.action : null;
+        $('ai-apply-action-btn').hidden = !state.aiProposal;
+      } catch (error) { $('ai-answer').textContent = error.message; showToast(error.message, true); }
+      finally { setBusyButton($('ai-chat-btn'), false, '发送问题'); }
+    }
+
+    async function applyAiProposal() {
+      const proposal = state.aiProposal;
+      if (!proposal || !(await confirmDialog(`确认采用 AI 建议：${proposal.type}？`))) return;
+      const params = proposal.params || {};
+      if (proposal.type === 'fill_params') {
+        state.aiSuggestion = params;
+        applyAiSuggestion();
+      } else if (proposal.type === 'adjust_range') {
+        if (Number(params.lower) > 0) $('lower').value = params.lower;
+        if (Number(params.upper) > Number(params.lower)) $('upper').value = params.upper;
+        await adjustGrid();
+      } else if (proposal.type === 'reconnect') await action('/api/reconnect', {});
+      else if (proposal.type === 'cancel_orders') await confirmAction('AI 建议撤销全部挂单并保留持仓，确认执行？', '/api/cancel-orders');
+      else if (proposal.type === 'stop_grid') {
+        const closePosition = params.closePosition === true;
+        await confirmAction(closePosition ? 'AI 建议停止网格并平仓，确认执行？' : 'AI 建议停止网格并保留持仓，确认执行？', '/api/stop', { closePosition });
+      } else if (proposal.type === 'close_position') {
+        await confirmAction('AI 建议撤销挂单并市价平仓，确认执行？', '/api/close-position', { marketId: params.marketId || state.market?.marketId });
+      } else if (proposal.type === 'start_recovery') {
+        await confirmAction('AI 建议启动只减仓回收阶梯，确认执行？', '/api/start-recovery', {
+          marketId: params.marketId || state.market?.marketId,
+          spacing: Number(params.spacing) || undefined,
+          sizeBase: Number(params.sizeBase) || undefined,
+          aboveEntryOnly: params.aboveEntryOnly !== false,
+        });
+      } else if (proposal.type === 'start_grid') {
+        const body = {
+          marketId: Number(params.marketId || state.market?.marketId),
+          mode: ['neutral', 'long', 'short'].includes(params.mode) ? params.mode : 'neutral',
+          lower: Number(params.lower), upper: Number(params.upper), gridCount: Number(params.gridCount),
+          sizeBase: Number(params.sizeBase), leverage: Number(params.leverage),
+          outOfRangeAction: params.outOfRangeAction === 'recover' ? 'recover' : 'close',
+        };
+        await confirmAction('AI 建议按给定参数启动网格，确认执行？', '/api/start', body);
+      }
+      state.aiProposal = null;
+      $('ai-apply-action-btn').hidden = true;
+    }
+
+    async function saveConnectionSettings() {
+      const targetMode = $('connection-mode').value;
+      const body = {
+        apiKey: $('connection-api-key').value.trim(),
+        privateKey: $('connection-private-key').value.trim(),
+        subaccount: $('connection-subaccount').value.trim(),
+        network: $('connection-network').value,
+        tradingMode: targetMode,
+        proxy: $('connection-proxy').value.trim(),
+      };
+      if (targetMode === 'live') {
+        const phrase = await phraseDialog('保存后重启将进入实盘。请输入 ENABLE DECIBEL LIVE：');
+        if (phrase == null) return;
+        body.liveConfirmation = phrase.trim();
+      }
+      setBusyButton($('connection-save-btn'), true, '保存中');
+      try {
+        const result = await request('/api/connection-settings', { method: 'POST', body: JSON.stringify(body) });
+        $('connection-api-key').value = '';
+        $('connection-private-key').value = '';
+        $('connection-subaccount').value = '';
+        $('connection-proxy').value = '';
+        renderConnectionSettings(result);
+        if (result.settings.hasApiKey && result.settings.hasPrivateKey && result.settings.hasSubaccount) setSettingsCollapsed('connection', true);
+        showToast('连接设置已保存，点击“重启模拟盘”后生效');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('connection-save-btn'), false, '保存连接设置'); }
+    }
+
+    async function restartService() {
+      if (state.bot?.running) { showToast('网格正在运行，请先停止并撤销挂单。', true); return; }
+      const mode = state.connection?.settings?.targetMode || state.app?.mode || 'paper';
+      if (mode === 'live') { showToast('目标模式为实盘，请手动启动实盘脚本。', true); return; }
+      if (!(await confirmDialog('重启后当前页面会断开。设置已保存，重启后进入模拟盘。继续吗？'))) return;
+      setBusyButton($('connection-restart-btn'), true, '正在重启');
+      try {
+        await request('/api/restart', { method: 'POST', body: '{}' });
+        showToast('模拟盘已重启，正在刷新状态…');
+        setBusyButton($('connection-restart-btn'), false, '重启模拟盘');
+        await refreshAll();
+      } catch (error) {
+        showToast(error.message, true);
+        setBusyButton($('connection-restart-btn'), false, '重启模拟盘');
+      }
+    }
+
+    async function checkProxyConnection() {
+      setBusyButton($('proxy-check-btn'), true, '检测中');
+      try {
+        const result = await request('/api/proxy-check');
+        showToast(result.ok ? `当前出口 IP：${result.ip}` : result.error, !result.ok);
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('proxy-check-btn'), false, '检测出口 IP'); }
+    }
+
+    function renderNotificationSettings(result) {
+      const settings = result?.settings || result;
+      if (!settings) return;
+      state.notification = { settings, dailyPnl: result?.dailyPnl || state.notification?.dailyPnl };
+      $('telegram-token-state').textContent = settings.hasToken ? settings.tokenMask : '未配置';
+      $('telegram-chat-id').value = settings.telegramChatId || '';
+      $('daily-time').value = settings.dailyTime || '23:55';
+      $('daily-timezone').value = settings.timezone || 'Asia/Shanghai';
+      $('daily-enabled').checked = !!settings.dailyEnabled;
+      $('notify-state').textContent = settings.enabled ? '已配置' : '未配置';
+      $('notify-test-btn').disabled = !settings.enabled;
+      $('daily-send-btn').disabled = !settings.enabled;
+      $('daily-report-badge').textContent = settings.dailyEnabled ? '已开启' : '未开启';
+      $('daily-report-badge').className = `pill push ${settings.dailyEnabled ? 'paper' : ''}`;
+      renderDailySummary(result?.dailyPnl || state.notification?.dailyPnl, settings);
+      if (!state.settingsInitialized.notification) {
+        setSettingsCollapsed('notification', settings.telegramReady);
+        state.settingsInitialized.notification = true;
+      }
+    }
+
+    function renderDailySummary(summary, settings = state.notification?.settings) {
+      if (!summary) return;
+      $('daily-baseline').textContent = summary.baselineEquity == null ? '--' : `${money(summary.baselineEquity)} USDC`;
+      $('daily-current').textContent = summary.currentEquity == null ? '--' : `${money(summary.currentEquity)} USDC`;
+      const pnl = Number(summary.pnl);
+      $('daily-pnl').textContent = `${signed(pnl, 2)} USDC (${signed(summary.pnlPct, 2)}%)`;
+      $('daily-pnl').classList.toggle('positive', pnl > 0);
+      $('daily-pnl').classList.toggle('negative', pnl < 0);
+      $('daily-schedule').textContent = settings ? `${settings.dailyTime} · ${settings.timezone}` : '--';
+    }
+
+    async function saveNotificationSettings() {
+      const body = {
+        telegramToken: $('telegram-token').value.trim(),
+        telegramChatId: $('telegram-chat-id').value.trim(),
+        dailyTime: $('daily-time').value,
+        timezone: $('daily-timezone').value,
+        dailyEnabled: $('daily-enabled').checked,
+      };
+      setBusyButton($('notification-save-btn'), true, '保存中');
+      try {
+        const result = await request('/api/notification-settings', { method: 'POST', body: JSON.stringify(body) });
+        $('telegram-token').value = '';
+        state.app.notificationsEnabled = result.settings.enabled;
+        renderNotificationSettings(result);
+        if (result.settings.telegramReady) setSettingsCollapsed('notification', true);
+        showToast('通知设置已保存');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('notification-save-btn'), false, '保存通知设置'); }
+    }
+
+    async function sendDailyReport() {
+      setBusyButton($('daily-send-btn'), true, '发送中');
+      try {
+        const result = await request('/api/daily-report', { method: 'POST', body: '{}' });
+        renderNotificationSettings(result);
+        showToast('当日盈亏日报已发送');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('daily-send-btn'), false, '立即发送日报'); }
+    }
+
+    function setSettingsCollapsed(kind, collapsed) {
+      $(`${kind}-settings-panel`).open = !collapsed;
+    }
+
+    async function loadMarkets() {
+      const result = await request('/api/markets');
+      state.markets = result.markets || [];
+      $('about-source').textContent = sourceName(result.dataSource);
+      $('connection-pill').textContent = sourceName(result.dataSource);
+      $('connection-pill').classList.add('connected');
+      $('market-select').innerHTML = state.markets.map((market) => `<option value="${market.marketId}">${escapeHtml(market.displayName)}</option>`).join('');
+      const savedName = state.bot?.config?.displayName;
+      const isBtc = (market) => /^BTC[-/]/i.test(market.displayName || market.name || '') || String(market.symbol).toUpperCase() === 'BTC';
+      state.market = state.markets.find((market) => market.displayName === savedName) || state.markets.find(isBtc) || state.markets[0] || null;
+      if (state.market) $('market-select').value = state.market.marketId;
+      renderMarket();
+    }
+
+    function renderMarket() {
+      $('market-title').textContent = state.market?.displayName || '无可用市场';
+      if (!state.market) return;
+      const price = Number(state.market.lastPrice || state.bot?.lastPrice || 0);
+      if (price > 0 && !$('lower').value) setSuggestedRange(price, 0.04, 12);
+    }
+
+    async function loadTrend() {
+      if (!state.market) return;
+      setBusyButton($('trend-btn'), true, '分析中');
+      try {
+        const result = await request(`/api/trend?marketId=${state.market.marketId}&intervalSec=3600`);
+        state.analysis = result.analysis;
+        state.candles = result.candles || [];
+        state.prices = state.candles.map((candle) => ({ time: candle.time, value: candle.close })).filter((point) => Number.isFinite(point.value));
+        renderTrend();
+        drawChart();
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusyButton($('trend-btn'), false, '刷新趋势'); }
+    }
+
+    function renderTrend() {
+      const analysis = state.analysis;
+      if (!analysis) return;
+      const names = { up: '上升', down: '下降', range: '震荡' };
+      $('trend-name').textContent = `${names[analysis.trend] || '--'} · ${Math.round((analysis.strength || 0) * 100)}%`;
+      $('trend-atr').textContent = analysis.atrPct != null ? `${format(analysis.atrPct, 3)}%` : '--';
+      $('trend-detail').textContent = analysis.detail || '--';
+    }
+
+    function fillSuggested(conservative) {
+      const price = Number(state.analysis?.price || state.bot?.lastPrice || state.market?.lastPrice);
+      if (!(price > 0)) return showToast('当前没有有效价格。', true);
+      if (!conservative) {
+        const step = Number(state.market?.stepPrice || 0.01);
+        state.formDirty = true;
+        state.mode = 'neutral';
+        document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'neutral'));
+        $('lower').value = trimNumber(snap(price - 3000, step), 8);
+        $('upper').value = trimNumber(snap(price + 3000, step), 8);
+        $('grid-count').value = 80;
+        $('size-base').value = '0.002';
+        $('leverage').value = 30;
+        $('oor-action').value = 'close';
+        $('action-status').textContent = '自动参数已填充：中性 · 现价 ±3000 · 80 格 · 每格 0.002 BTC · 30x';
+        return;
+      }
+      state.formDirty = true;
+      const atr = Math.max(Number(state.analysis?.atrPct || 1.2) / 100, 0.006);
+      const width = Math.max(atr * 4, 0.06);
+      const count = 10;
+      state.mode = state.analysis?.recommended || 'neutral';
+      document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
+      setSuggestedRange(price, width, count);
+      const balance = Number(state.bot?.equity || 10000);
+      const leverage = 2;
+      const rawSize = (balance * leverage * 0.08) / (count * price);
+      const step = Number(state.market?.stepSize || 0.0001);
+      const min = Number(state.market?.minOrderSize || step);
+      const size = Math.max(min, Math.floor(rawSize / step) * step);
+      $('size-base').value = trimNumber(size, 8);
+      $('leverage').value = leverage;
+      $('oor-action').value = 'close';
+      $('action-status').textContent = `稳健参数已填充，区间宽度 ${format(width * 100, 2)}%`;
+    }
+
+    function setSuggestedRange(price, width, count) {
+      const step = Number(state.market?.stepPrice || 0.01);
+      $('lower').value = trimNumber(snap(price * (1 - width), step), 8);
+      $('upper').value = trimNumber(snap(price * (1 + width), step), 8);
+      $('grid-count').value = count;
+      if (!$('size-base').value) $('size-base').value = trimNumber(Number(state.market?.minOrderSize || 0.001), 8);
+    }
+
+    async function startGrid(allowExistingPosition = false) {
+      if (!state.market) return;
+      const body = formBody();
+      body.allowExistingPosition = !!allowExistingPosition;
+      if (state.app?.mode === 'live') {
+        const command = allowExistingPosition ? 'REGRID' : 'LIVE';
+        const phrase = await phraseDialog(`实盘将发送真实订单。请输入 ${command} ${state.market.displayName} 继续：`);
+        if (phrase == null) return;
+        body.liveConfirmation = phrase.trim();
+      } else if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启动'} ${body.gridCount} 格模拟网格？`))) return;
+      await action('/api/start', body);
+    }
+
+    async function runPreflight() {
+      setBusyButton($('preflight-btn'), true, '检查中');
+      $('preflight-modal').classList.add('show');
+      $('preflight-summary').textContent = '正在检查 Decibel 连接与账户状态...';
+      $('preflight-list').innerHTML = '';
+      try {
+        const result = await request('/api/preflight', { method: 'POST', body: '{}' });
+        renderPreflight(result);
+      } catch (error) {
+        $('preflight-summary').textContent = error.message;
+        showToast(error.message, true);
+      } finally { setBusyButton($('preflight-btn'), false, '实盘预检'); }
+    }
+
+    function renderPreflight(result) {
+      state.preflight = result;
+      $('preflight-summary').textContent = result.ready
+        ? '预检通过，5 分钟内可以启动实盘网格。'
+        : '预检未通过，请处理失败项目后重试。';
+      $('preflight-list').innerHTML = (result.checks || []).map((check) => `
+        <div class="check-row ${check.status}">
+          <span class="check-icon">${check.status === 'pass' ? '✓' : check.status === 'fail' ? '×' : '!'}</span>
+          <strong>${escapeHtml(check.label)}</strong>
+          <span class="check-detail">${escapeHtml(check.detail)}</span>
+        </div>`).join('');
+      renderPreflightBadge(result);
+    }
+
+    function renderPreflightBadge(result) {
+      const ready = result?.ready && Number(result.expiresAt) > Date.now();
+      $('preflight-badge').textContent = ready ? '预检通过' : (result?.t ? '预检未通过' : '未预检');
+      $('preflight-badge').className = `pill push ${ready ? 'paper' : (result?.t ? 'live' : '')}`;
+    }
+
+    async function testNotification() {
+      try {
+        await request('/api/notify-test', { method: 'POST', body: '{}' });
+        showToast('通知测试已发送');
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function resetRisk() {
+      const phrase = await phraseDialog('停止网格后才能重置日内风险基线。请输入 RESET RISK：');
+      if (phrase == null) return;
+      try {
+        await request('/api/risk-reset', { method: 'POST', body: JSON.stringify({ confirmation: phrase.trim() }) });
+        showToast('风险基线已重置');
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function saveRiskPolicy() {
+      try {
+        const result = await request('/api/risk-policy', { method: 'POST', body: JSON.stringify({
+          maxLeverage: Number($('policy-max-leverage').value),
+          maxGridCount: Number($('policy-max-grids').value),
+          maxNotional: Number($('policy-max-notional').value),
+          maxMarginPct: Number($('policy-margin-pct').value),
+          minMaintenanceMarginRatio: Number($('policy-maintenance-ratio').value),
+          dailyLossLimit: Number($('policy-daily-loss').value),
+          maxDrawdownPct: Number($('policy-drawdown').value),
+        }) });
+        state.app.riskPolicy = result.riskPolicy;
+        renderApp();
+        $('risk-policy-form').hidden = true;
+        showToast('风控上限已保存');
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function emergencyStop() {
+      const phrase = await phraseDialog('将立即撤销挂单并尝试平仓。请输入 EMERGENCY STOP：');
+      if (phrase == null) return;
+      await action('/api/emergency-stop', { confirmation: phrase.trim() });
+    }
+
+    async function startRecovery() {
+      if (!state.market || !state.bot?.position) return;
+      const spacing = Math.abs(Number($('upper').value) - Number($('lower').value)) / Math.max(2, Number($('grid-count').value));
+      const marketId = Number(state.bot.config?.marketId || state.market.marketId);
+      const market = state.markets.find((item) => Number(item.marketId) === marketId) || state.market;
+      const body = {
+        marketId,
+        spacing,
+        sizeBase: Number($('size-base').value),
+        aboveEntryOnly: true,
+      };
+      if (state.app?.mode === 'live') {
+        const phrase = await phraseDialog(`将只减仓退出当前持仓。请输入 RECOVER ${market.displayName} 继续：`);
+        if (phrase == null) return;
+        body.liveConfirmation = phrase.trim();
+      } else if (!(await confirmDialog('启动只减仓回收阶梯？该模式只退出现有仓位，不会增加仓位。'))) return;
+      await action('/api/start-recovery', body);
+    }
+
+    async function closeOrphanPosition() {
+      const marketId = Number(state.bot.config?.marketId || state.market?.marketId);
+      const market = state.markets.find((item) => Number(item.marketId) === marketId) || state.market;
+      const body = { marketId };
+      if (state.app?.mode === 'live') {
+        const phrase = await phraseDialog(`将撤单并尝试市价平仓。请输入 CLOSE ${market.displayName} 继续：`);
+        if (phrase == null) return;
+        body.liveConfirmation = phrase.trim();
+      } else if (!(await confirmDialog('撤销该市场挂单并立即市价平掉遗留仓位？'))) return;
+      await action('/api/close-position', body);
+    }
+
+    async function adjustGrid() {
+      if (!(await confirmDialog('撤销旧区间挂单并按新边界重新挂单？当前持仓会保留。'))) return;
+      await action('/api/adjust', { lower: Number($('lower').value), upper: Number($('upper').value) });
+    }
+
+    function formBody() {
+      return {
+        marketId: Number(state.market.marketId),
+        mode: state.mode,
+        lower: Number($('lower').value),
+        upper: Number($('upper').value),
+        gridCount: Number($('grid-count').value),
+        sizeBase: Number($('size-base').value),
+        leverage: Number($('leverage').value),
+        outOfRangeAction: $('oor-action').value,
+      };
+    }
+
+    async function confirmAction(message, path, body = {}) {
+      if (await confirmDialog(message)) await action(path, body);
+    }
+
+    function confirmDialog(message) {
+      return openConfirmation(message, false);
+    }
+
+    function phraseDialog(message) {
+      return openConfirmation(message, true);
+    }
+
+    function openConfirmation(message, needsInput) {
+      if (state.confirmResolver) state.confirmResolver(null);
+      $('confirm-message').textContent = message;
+      $('confirm-input-wrap').hidden = !needsInput;
+      $('confirm-input').value = '';
+      $('confirm-modal').classList.add('show');
+      if (needsInput) setTimeout(() => $('confirm-input').focus(), 0);
+      return new Promise((resolve) => { state.confirmResolver = resolve; });
+    }
+
+    function resolveConfirmation(value) {
+      const resolve = state.confirmResolver;
+      state.confirmResolver = null;
+      $('confirm-modal').classList.remove('show');
+      if (resolve) resolve(value);
+    }
+
+    async function action(path, body) {
+      if (state.busy) return;
+      state.busy = true;
+      setActionsDisabled(true);
+      try {
+        const result = await request(path, { method: 'POST', body: JSON.stringify(body) });
+        state.bot = result;
+        renderState(result);
+        showToast('操作已完成');
+      } catch (error) {
+        showToast(error.message, true);
+        $('action-status').textContent = error.message;
+      } finally {
+        state.busy = false;
+        setActionsDisabled(false);
+      }
+    }
+
+    function connectStream() {
+      const stream = new EventSource(apiUrl('/api/stream'));
+      stream.onopen = () => { $('connection-pill').textContent = '实时连接'; $('connection-pill').classList.add('connected'); };
+      stream.onmessage = (event) => {
+        try {
+          state.bot = JSON.parse(event.data);
+          renderState(state.bot);
+          const value = Number(state.bot.lastPrice);
+          if (value > 0) {
+            state.prices.push({ time: Date.now(), value });
+            if (state.prices.length > 180) state.prices.shift();
+            drawChart();
+          }
+        } catch { /* wait for the next event */ }
+      };
+      stream.onerror = () => { $('connection-pill').textContent = '正在重连'; $('connection-pill').classList.remove('connected'); };
+    }
+
+    function renderState(bot) {
+      if (!bot) return;
+      const price = Number(bot.lastPrice || state.market?.lastPrice);
+      $('last-price').textContent = price > 0 ? `${money(price)} USDC` : '--';
+      const health = bot.health || {};
+      $('health-text').textContent = health.reason || (bot.running ? '运行中' : '未运行');
+      $('metric-equity').textContent = money(bot.equity);
+      setSigned($('metric-pnl'), bot.totalPnl);
+      $('metric-return').textContent = `收益率 ${signed(bot.returnPct, 2)}%`;
+      setSigned($('metric-realized'), bot.realizedPnl);
+      setSigned($('metric-unrealized'), bot.unrealizedPnl);
+      $('metric-unrealized-note').textContent = bot.position
+        ? `${bot.position.sizeBase > 0 ? '多头' : '空头'} ${format(Math.abs(bot.position.sizeBase), 6)} 币`
+        : `无持仓 · ${bot.openOrders ?? 0} 个挂单待成交`;
+      $('metric-rungs').textContent = bot.stats?.completedRungs ?? 0;
+      $('metric-volume').textContent = `成交额 ${money(bot.volume)}`;
+      $('metric-orders').textContent = bot.openOrders ?? 0;
+      $('metric-order-sync').textContent = `交易所 ${bot.exchangeOpenOrders ?? '--'}`;
+      $('run-state').textContent = bot.running ? (bot.recovery ? '回收中' : '运行中') : '未运行';
+      $('run-state').className = `pill push ${bot.running ? 'paper' : ''}`;
+      $('range-state').textContent = bot.outOfRange ? '超出区间' : (bot.config ? '区间内' : '未配置');
+      $('range-state').className = `pill push ${bot.outOfRange ? 'live' : (bot.config ? 'paper' : '')}`;
+      $('position-size').textContent = bot.position ? `${signed(bot.position.sizeBase, 6)} 币` : '无仓位';
+      $('position-entry').textContent = bot.position ? money(bot.position.entryPrice) : '--';
+      $('risk-notional').textContent = bot.risk ? `${money(bot.risk.notional)} USDC` : '--';
+      $('risk-margin').textContent = bot.risk ? `${money(bot.risk.requiredMargin)} USDC` : '--';
+      $('risk-rung').textContent = bot.risk ? `${money(bot.risk.perRungProfit)} USDC` : '--';
+      $('risk-spacing').textContent = bot.risk ? `${format(bot.risk.spacingPct, 3)}%` : '--';
+      $('risk-daily-loss').textContent = `${money(bot.liveRisk?.dailyLoss)} USDC`;
+      $('risk-drawdown').textContent = `${format(bot.liveRisk?.drawdownPct, 2)}%`;
+      $('risk-daily-loss').classList.toggle('negative', !!bot.liveRisk?.halted);
+      $('risk-drawdown').classList.toggle('negative', !!bot.liveRisk?.halted);
+      renderDailySummary(bot.dailyPnl);
+      renderPreflightBadge(bot.preflight);
+      if (bot.running) {
+        state.formDirty = false;
+        $('action-status').textContent = `${bot.config.displayName} · ${modeName(bot.config.mode)} · ${bot.openOrders} 个挂单`;
+      } else if (!state.formDirty) {
+        $('action-status').textContent = health.reason || '等待启动';
+      }
+      $('start-btn').disabled = bot.running;
+      $('adjust-btn').disabled = !bot.running;
+      $('cancel-btn').disabled = !bot.config;
+      $('stop-btn').disabled = !bot.config;
+      $('risk-reset-btn').disabled = bot.running;
+      $('rescue-panel').classList.toggle('show', !!bot.position && !bot.running);
+      if (bot.position && !bot.running) {
+        const side = bot.position.sizeBase > 0 ? '多头' : '空头';
+        $('rescue-detail').textContent = `${side} ${Math.abs(bot.position.sizeBase)} 币 · 均价 ${money(bot.position.entryPrice)} · 未实现 ${signed(bot.position.unrealizedPnl, 2)} USDC`;
+      }
+      if (bot.config && !state.formDirty) syncForm(bot.config);
+      renderLadder(bot);
+      renderLogs(bot.alerts || []);
+    }
+
+    function syncForm(config) {
+      state.formDirty = false;
+      state.mode = config.mode || state.mode;
+      document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
+      $('lower').value = config.lower;
+      $('upper').value = config.upper;
+      $('grid-count').value = config.gridCount;
+      $('size-base').value = config.sizeBase;
+      $('leverage').value = config.leverage;
+      $('oor-action').value = config.outOfRangeAction || 'close';
+    }
+
+    function renderLadder(bot) {
+      const ladder = $('ladder');
+      ladder.innerHTML = '';
+      const levels = bot.grid?.levels || [];
+      if (!levels.length) {
+        for (let i = 0; i < 9; i++) ladder.insertAdjacentHTML('beforeend', '<div class="rung"></div>');
+        $('range-upper').textContent = '--'; $('range-current').textContent = '当前 --'; $('range-lower').textContent = '--';
+        return;
+      }
+      const step = Math.max(1, Math.ceil(levels.length / 17));
+      levels.forEach((level, index) => {
+        if (index % step && index !== levels.length - 1) return;
+        const side = bot.openByLevel?.[index] || '';
+        const line = document.createElement('div');
+        line.className = `rung ${side}`;
+        line.title = `${level}${side ? ` · ${side}` : ''}`;
+        ladder.appendChild(line);
+      });
+      $('range-upper').textContent = money(levels.at(-1));
+      $('range-current').textContent = `当前 ${money(bot.lastPrice)}`;
+      $('range-lower').textContent = money(levels[0]);
+    }
+
+    function renderLogs(alerts) {
+      if (!alerts.length) { $('log-list').innerHTML = '<div class="empty-row">暂无记录</div>'; return; }
+      $('log-list').innerHTML = alerts.map((item) => `<div class="log-item"><time>${new Date(item.t).toLocaleTimeString('zh-CN', { hour12: false })}</time><div>${escapeHtml(item.message)}</div></div>`).join('');
+    }
+
+    function drawChart() {
+      const canvas = $('price-chart');
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      // Live ticks arrive ~1/s while candle history is hourly. Once enough
+      // live points exist, show just the live window so the y-axis scales to
+      // the recent range instead of the full candle span (which made the
+      // real-time tail look like a flat line).
+      const liveCount = state.prices.length - state.candles.length;
+      const points = liveCount >= 60 ? state.prices.slice(-Math.min(120, liveCount)) : state.prices.slice(-120);
+      $('chart-empty').style.display = points.length < 2 ? 'grid' : 'none';
+      if (points.length < 2) return;
+      const values = points.map((point) => point.value);
+      let min = Math.min(...values), max = Math.max(...values);
+      const padding = Math.max((max - min) * .15, max * .0002);
+      min -= padding; max += padding;
+      const left = 16, right = 68, top = 14, bottom = 24;
+      const width = rect.width - left - right, height = rect.height - top - bottom;
+      ctx.strokeStyle = '#e5eae7'; ctx.lineWidth = 1;
+      ctx.fillStyle = '#78817e'; ctx.font = '10px ui-sans-serif'; ctx.textAlign = 'left';
+      for (let i = 0; i <= 4; i++) {
+        const y = top + height * i / 4;
+        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+        const label = max - (max - min) * i / 4;
+        ctx.fillText(money(label), left + width + 8, y + 3);
+      }
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const x = left + width * index / (points.length - 1);
+        const y = top + height - ((point.value - min) / (max - min)) * height;
+        index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = '#167a5b'; ctx.lineWidth = 2; ctx.stroke();
+      const last = points.at(-1);
+      const x = left + width, y = top + height - ((last.value - min) / (max - min)) * height;
+      // live price tag: dashed guide line + label on the right edge
+      ctx.save();
+      ctx.strokeStyle = '#167a5b'; ctx.globalAlpha = .35; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+      ctx.restore();
+      const tag = money(last.value);
+      ctx.font = '10px ui-sans-serif';
+      const tagWidth = ctx.measureText(tag).width + 10;
+      const tagY = Math.min(Math.max(y - 9, top), top + height - 18);
+      ctx.fillStyle = '#167a5b';
+      ctx.beginPath(); ctx.roundRect(left + width + 4, tagY, tagWidth, 18, 4); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left';
+      ctx.fillText(tag, left + width + 9, tagY + 13);
+      ctx.fillStyle = '#167a5b'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function setActionsDisabled(disabled) {
+      ['start-btn','adjust-btn','cancel-btn','stop-btn','reset-btn','reconnect-btn'].forEach((id) => $(id).disabled = disabled);
+    }
+    function setBusyButton(button, busy, label) { button.disabled = busy; button.textContent = label; }
+    function sourceName(source) { return source === 'real' ? '真实行情' : source === 'spot' ? '公共现货行情' : source === 'synthetic' ? '合成行情' : '正在连接'; }
+    function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', recovery: '回收' })[mode] || mode; }
+    function snap(value, step) { return Math.round(value / step) * step; }
+    function trimNumber(value, digits) { return Number(value.toFixed(digits)).toString(); }
+    function format(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '--'; }
+    function money(value) { const n = Number(value); if (!Number.isFinite(n)) return '--'; const digits = Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : 6; return n.toLocaleString('zh-CN', { maximumFractionDigits: digits }); }
+    function signed(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${format(n, digits)}` : '--'; }
+    function setSigned(element, value) { const n = Number(value); element.textContent = signed(n, 2); element.classList.toggle('positive', n > 0); element.classList.toggle('negative', n < 0); }
+    function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]); }
+    let toastTimer;
+    function showToast(message, error = false) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').className = `toast show${error ? ' error' : ''}`; toastTimer = setTimeout(() => $('toast').className = 'toast', 3200); }
+
+    init();
+  </script>
+</body>
+</html>

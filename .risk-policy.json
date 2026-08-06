@@ -1,0 +1,9 @@
+{
+  "maxLeverage": 10,
+  "maxGridCount": 0,
+  "maxNotional": 0,
+  "maxMarginPct": 35,
+  "minMaintenanceMarginRatio": 300,
+  "dailyLossLimit": 20,
+  "maxDrawdownPct": 30
+}
