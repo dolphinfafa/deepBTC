@@ -65,7 +65,8 @@
     .metric small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
     .positive { color: var(--green) !important; }
     .negative { color: var(--coral) !important; }
-    .workspace { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(360px, .85fr); gap: 18px; align-items: start; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(360px, .85fr); gap: 18px; align-items: stretch; }
+    .workspace > article.panel { min-height: 0; display: flex; flex-direction: column; }
     .safety-panel { margin-bottom: 18px; box-shadow: none; }
     .safety-body { padding: 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: center; }
     .safety-stats { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
@@ -117,7 +118,7 @@
     .panel-head h2 { font-size: 14px; margin: 0; }
     .panel-head .push { margin-left: auto; }
     .panel-body { padding: 18px; }
-    .chart-wrap { height: 320px; position: relative; }
+    .chart-wrap { flex: 1; min-height: 320px; position: relative; }
     #price-chart { width: 100%; height: 100%; display: block; cursor: crosshair; }
     #price-chart.dragging { cursor: grabbing; }
     .chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; pointer-events: none; }
@@ -152,24 +153,33 @@
     .action-main { width: 100%; min-height: 48px; margin-top: 16px; font-size: 13px; }
     .secondary-actions { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 8px; }
     .status-box { margin-top: 12px; padding: 10px 12px; min-height: 38px; border-radius: 6px; background: var(--soft); color: var(--muted); font-size: 11px; line-height: 1.5; }
-    .lower-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,.85fr); gap: 18px; margin-top: 18px; }
-    .data-table { width: 100%; border-collapse: collapse; }
-    .data-table th, .data-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
-    .data-table th { color: var(--muted); font-weight: 750; }
-    .data-table td { font-variant-numeric: tabular-nums; }
-    .data-table tr:last-child td { border-bottom: 0; }
-    .grid-visual { padding: 16px; height: 236px; display: flex; gap: 16px; }
+    .trade-monitor { margin-top: 18px; }
+    .monitor-metrics { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); border-bottom: 1px solid var(--line); }
+    .monitor-metric { min-width: 0; padding: 14px 16px; border-right: 1px solid var(--line); }
+    .monitor-metric:last-child { border-right: 0; }
+    .monitor-metric span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
+    .monitor-metric strong { display: block; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .monitor-body { display: grid; grid-template-columns: minmax(280px,.75fr) minmax(0,1.25fr); min-height: 270px; }
+    .monitor-grid { min-width: 0; border-right: 1px solid var(--line); }
+    .monitor-section-head { min-height: 42px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+    .monitor-section-head h3 { margin: 0; font-size: 11px; }
+    .monitor-section-head .push { margin-left: auto; }
+    .grid-visual { padding: 16px; height: 226px; display: flex; gap: 16px; }
     .ladder { flex: 1; display: flex; flex-direction: column-reverse; justify-content: space-between; padding: 4px 0; }
     .rung { height: 1px; background: var(--line); position: relative; }
     .rung.buy::after, .rung.sell::after { content: ""; width: 8px; height: 8px; border-radius: 50%; position: absolute; right: 5%; top: -4px; }
     .rung.buy::after { background: var(--green); }
     .rung.sell::after { background: var(--coral); }
     .price-pointer { width: 90px; display: flex; flex-direction: column; justify-content: space-between; color: var(--muted); font-size: 10px; text-align: right; }
-    .activity { margin-top: 18px; }
-    .log-list { max-height: 260px; overflow: auto; }
-    .log-item { display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
+    .monitor-log { min-width: 0; }
+    .log-list { height: 226px; overflow: auto; }
+    .log-item { display: grid; grid-template-columns: 68px 42px minmax(0,1fr); gap: 10px; align-items: start; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
     .log-item:last-child { border-bottom: 0; }
     .log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .log-kind { color: var(--muted); font-size: 9px; font-weight: 800; }
+    .log-kind.order { color: #376f9c; }
+    .log-kind.fill { color: var(--green); }
+    .log-kind.cancel, .log-kind.warning { color: var(--coral); }
     .empty-row { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 11px; }
     .toast { position: fixed; right: 18px; bottom: 18px; max-width: min(390px, calc(100% - 36px)); padding: 12px 15px; border-radius: 7px; color: white; background: var(--ink); box-shadow: var(--shadow); font-size: 12px; transform: translateY(20px); opacity: 0; pointer-events: none; transition: .2s ease; z-index: 40; }
     .toast.show { transform: translateY(0); opacity: 1; }
@@ -186,7 +196,9 @@
     @media (max-width: 1100px) {
       .metrics { grid-template-columns: repeat(3,1fr); }
       .workspace { grid-template-columns: 1fr; }
-      .lower-grid { grid-template-columns: 1fr; }
+      .monitor-metrics { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .monitor-metric:nth-child(3) { border-right: 0; }
+      .monitor-metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
     }
     @media (max-width: 680px) {
       .shell { width: min(100% - 24px, 1480px); }
@@ -199,7 +211,7 @@
       .metrics { grid-template-columns: repeat(2,1fr); }
       .metric { min-height: 92px; padding: 13px; }
       .metric strong { font-size: 17px; }
-      .chart-wrap { height: 250px; }
+      .chart-wrap { min-height: 250px; }
       .chart-panel-head { height: auto; padding-top: 9px; padding-bottom: 9px; flex-wrap: wrap; }
       .chart-head-tools { width: 100%; margin-left: 0; gap: 5px; justify-content: space-between; }
       .chart-mode button { padding: 0 7px; }
@@ -218,6 +230,13 @@
       .settings-summary div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
       .check-row { grid-template-columns: 22px 92px minmax(0,1fr); }
       .log-item { grid-template-columns: 64px 1fr; }
+      .monitor-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .monitor-metric:nth-child(3) { border-right: 1px solid var(--line); }
+      .monitor-metric:nth-child(even) { border-right: 0; }
+      .monitor-metric:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
+      .monitor-body { grid-template-columns: 1fr; }
+      .monitor-grid { border-right: 0; border-bottom: 1px solid var(--line); }
+      .log-item { grid-template-columns: 58px 38px minmax(0,1fr); padding-left: 12px; padding-right: 12px; }
     }
     @media (max-width: 440px) {
       .settings-grid { grid-template-columns: 1fr; }
@@ -369,30 +388,29 @@
       </aside>
     </section>
 
-    <section class="lower-grid">
-      <article class="panel">
-        <header class="panel-head"><h2>仓位与风险</h2><button id="reset-btn" class="btn small push">重置统计</button></header>
-        <table class="data-table">
-          <thead><tr><th>项目</th><th>当前值</th><th>项目</th><th>当前值</th></tr></thead>
-          <tbody>
-            <tr><td>仓位数量</td><td id="position-size">--</td><td>持仓均价</td><td id="position-entry">--</td></tr>
-            <tr><td>名义价值</td><td id="risk-notional">--</td><td>预估保证金</td><td id="risk-margin">--</td></tr>
-            <tr><td>单格毛利</td><td id="risk-rung">--</td><td>单格间距</td><td id="risk-spacing">--</td></tr>
-          </tbody>
-        </table>
-      </article>
-      <article class="panel">
-        <header class="panel-head"><h2>网格分布</h2><span id="range-state" class="pill push">未配置</span></header>
-        <div class="grid-visual">
-          <div id="ladder" class="ladder"></div>
-          <div class="price-pointer"><span id="range-upper">--</span><span id="range-current">当前 --</span><span id="range-lower">--</span></div>
+    <section class="panel trade-monitor">
+      <header class="panel-head"><h2>交易监控</h2><button id="reset-btn" class="btn small push">重置统计</button></header>
+      <div class="monitor-metrics">
+        <div class="monitor-metric"><span>仓位数量</span><strong id="position-size">--</strong></div>
+        <div class="monitor-metric"><span>持仓均价</span><strong id="position-entry">--</strong></div>
+        <div class="monitor-metric"><span>名义价值</span><strong id="risk-notional">--</strong></div>
+        <div class="monitor-metric"><span>预估保证金</span><strong id="risk-margin">--</strong></div>
+        <div class="monitor-metric"><span>单格毛利</span><strong id="risk-rung">--</strong></div>
+        <div class="monitor-metric"><span>单格间距</span><strong id="risk-spacing">--</strong></div>
+      </div>
+      <div class="monitor-body">
+        <div class="monitor-grid">
+          <div class="monitor-section-head"><h3>网格与挂单分布</h3><span id="range-state" class="pill push">未配置</span></div>
+          <div class="grid-visual">
+            <div id="ladder" class="ladder"></div>
+            <div class="price-pointer"><span id="range-upper">--</span><span id="range-current">当前 --</span><span id="range-lower">--</span></div>
+          </div>
         </div>
-      </article>
-    </section>
-
-    <section class="panel activity">
-      <header class="panel-head"><h2>运行记录</h2></header>
-      <div id="log-list" class="log-list"><div class="empty-row">暂无记录</div></div>
+        <div class="monitor-log">
+          <div class="monitor-section-head"><h3>操作流水</h3></div>
+          <div id="log-list" class="log-list"><div class="empty-row">暂无记录</div></div>
+        </div>
+      </div>
     </section>
 
     <details id="connection-settings-panel" class="panel settings-panel" open>
@@ -1338,7 +1356,7 @@
       }
       if (bot.config && !state.formDirty) syncForm(bot.config);
       renderLadder(bot);
-      renderLogs(bot.alerts || []);
+      renderLogs(bot.activity || bot.alerts || []);
     }
 
     function syncForm(config) {
@@ -1376,9 +1394,13 @@
       $('range-lower').textContent = money(levels[0]);
     }
 
-    function renderLogs(alerts) {
-      if (!alerts.length) { $('log-list').innerHTML = '<div class="empty-row">暂无记录</div>'; return; }
-      $('log-list').innerHTML = alerts.map((item) => `<div class="log-item"><time>${new Date(item.t).toLocaleTimeString('zh-CN', { hour12: false })}</time><div>${escapeHtml(item.message)}</div></div>`).join('');
+    function renderLogs(items) {
+      if (!items.length) { $('log-list').innerHTML = '<div class="empty-row">暂无记录</div>'; return; }
+      const labels = { order: '挂单', fill: '成交', cancel: '撤单', warning: '警告', system: '系统' };
+      $('log-list').innerHTML = items.map((item) => {
+        const type = labels[item.type] ? item.type : 'system';
+        return `<div class="log-item"><time>${new Date(item.t).toLocaleTimeString('zh-CN', { hour12: false })}</time><span class="log-kind ${type}">${labels[type]}</span><div>${escapeHtml(item.message)}</div></div>`;
+      }).join('');
     }
 
     function normalizeChartCandle(candle) {
@@ -1524,7 +1546,7 @@
       ctx.font = '10px ui-sans-serif';
       const tagWidth = ctx.measureText(tag).width + 10;
       const tagY = Math.min(Math.max(y - 9, top), top + height - 18);
-      const tagX = Math.max(left, left + width - tagWidth - 4);
+      const tagX = Math.min(rect.width - tagWidth - 4, left + width + 4);
       ctx.fillStyle = last.close >= last.open ? '#167a5b' : '#d85d48';
       ctx.beginPath(); ctx.roundRect(tagX, tagY, tagWidth, 18, 4); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.textAlign = 'left';

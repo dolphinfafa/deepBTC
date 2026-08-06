@@ -330,6 +330,23 @@ test('range adjustment re-seeds orders without closing the position', async () =
   await bot.stop({ closePosition: false });
 });
 
+test('trading activity records orders and cancellations and survives restore', async () => {
+  const exchange = fakeLiveExchange();
+  const bot = new GridBot(exchange);
+  await bot.start(gridConfig());
+  const placed = bot.active.size;
+  assert.ok(placed > 0);
+  assert.equal(bot.getState().activity.filter((item) => item.type === 'order').length, placed);
+
+  await bot.cancelAllOrders();
+  const state = bot.getState();
+  assert.equal(state.activity.filter((item) => item.type === 'cancel' && item.message.startsWith('一键撤销挂单')).length, placed);
+
+  const restored = new GridBot(fakeLiveExchange());
+  restored.restore(bot.snapshot());
+  assert.deepEqual(restored.getState().activity, state.activity);
+});
+
 test('price beyond the range closes and stops by default', async () => {
   const exchange = fakeLiveExchange();
   const bot = new GridBot(exchange);

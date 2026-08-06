@@ -18,6 +18,7 @@ export class GridBot {
     this.active = new Map();        // orderId -> {levelIndex, side, price, opening, placedAt}
     this.fills = [];                // recent fills (capped)
     this.alerts = [];               // recent alerts (capped)
+    this.activity = [];             // complete trading operation stream (capped)
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0 };
     this.startBalance = null;
     this.lastPrice = null;
@@ -83,6 +84,7 @@ export class GridBot {
       recovery: this.recovery, pnlBase: this._pnlBase,
       startBalance: this.startBalance, outOfRange: this.outOfRange, lastPrice: this.lastPrice,
       fills: this.fills.slice(0, 50), alerts: this.alerts.slice(0, 30),
+      activity: this.activity.slice(0, 200),
       active: [...this.active.entries()],
       exchangeState: this.ex.exportState?.() ?? null,
     };
@@ -100,6 +102,7 @@ export class GridBot {
     this._pnlBase = snap.pnlBase ?? null;
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
+    this.activity = restoreActivity(snap);
     try {
       this.grid = buildGrid({ lower: this.config.lower, upper: this.config.upper, gridCount: this.config.gridCount });
       this._recomputeRisk();
@@ -125,6 +128,7 @@ export class GridBot {
     this._pnlBase = snap.pnlBase ?? null;
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
+    this.activity = restoreActivity(snap);
     this.outOfRange = !!snap.outOfRange;
     this.lastPrice = snap.lastPrice ?? null;
     this.grid = buildGrid({ lower: this.config.lower, upper: this.config.upper, gridCount: this.config.gridCount });
@@ -137,6 +141,9 @@ export class GridBot {
     for (const [id, info] of snap.active) {
       const oid = String(id);
       this.active.set(oid, { ...info, placedAt: info.placedAt ?? Date.now() });
+      if (!this.activity.some((item) => item.message?.includes(`#${oid}`))) {
+        this._activity(`恢复接管挂单 · ${sideName(info.side)} ${round6(Number(info.sizeBase ?? this.config.sizeBase) || 0)} @ ${round2(Number(info.price) || 0)} · 网格 ${info.levelIndex} · #${oid}`, 'order');
+      }
       if (typeof this.ex.adoptOrder === 'function') {
         try {
           this.ex.adoptOrder({
@@ -167,6 +174,7 @@ export class GridBot {
     this._pnlBase = snap.pnlBase ?? null;
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
+    this.activity = restoreActivity(snap);
     this.grid = null; this.risk = null;
     this.recovery = true; this.outOfRange = false;
     this.lastPrice = snap.lastPrice ?? null;
@@ -176,6 +184,9 @@ export class GridBot {
     for (const [id, info] of (Array.isArray(snap.active) ? snap.active : [])) {
       const oid = String(id);
       this.active.set(oid, { ...info, placedAt: info.placedAt ?? Date.now() });
+      if (!this.activity.some((item) => item.message?.includes(`#${oid}`))) {
+        this._activity(`恢复接管回收挂单 · ${sideName(info.side)} ${round6(Number(info.sizeBase ?? this.config.sizeBase) || 0)} @ ${round2(Number(info.price) || 0)} · 网格 ${info.levelIndex} · #${oid}`, 'order');
+      }
       try {
         this.ex.adoptOrder?.({
           orderId: oid, marketId: this.config.marketId, levelIndex: info.levelIndex,
@@ -205,7 +216,7 @@ export class GridBot {
    */
   async recoverStrayOrders() {
     if (!this.config) return;
-    await this.ex.cancelAll(this.config.marketId).catch(() => {});
+    await this._cancelAllTracked('异常恢复撤单').catch(() => {});
     this._alert('⚠️ 检测到上次运行未正常结束：已撤销该市场遗留挂单。请确认仓位后重新启动网格。');
     this._changed();
   }
@@ -272,7 +283,7 @@ export class GridBot {
       if (this.ex.mode === 'live') throw new Error(`Decibel 杠杆设置 ${leverage}x 未成功，已中止启动。请先在交易所网页端核实账户与市场设置。`);
       this._alert(`⚠️ 杠杆设置 ${leverage}x 未生效，将沿用交易所端该市场的当前杠杆。`);
     }
-    const cancelled = await this.ex.cancelAll(market.marketId).catch(() => false);
+    const cancelled = await this._cancelAllTracked('启动前清理遗留挂单', market.marketId);
     if (cancelled === false && this.ex.mode === 'live') {
       throw new Error('未能确认撤销该市场的遗留挂单，已中止启动，避免重复挂单。请到 Decibel 人工核对。');
     }
@@ -295,7 +306,7 @@ export class GridBot {
     let placed = 0;
     for (const s of seeds) if (await this._place({ ...s, opening: true })) placed++;
     if (this.ex.mode === 'live' && placed !== seeds.length) {
-      const rolledBack = await this.ex.cancelAll(market.marketId).catch(() => false);
+      const rolledBack = await this._cancelAllTracked('启动失败回滚', market.marketId);
       this.active.clear();
       this.ex.off('fill', this._onFill);
       this.ex.off('price', this._onPrice);
@@ -314,7 +325,7 @@ export class GridBot {
     this._stopReconcileTimer();
     if (!this.running) {
       if (this.config) {
-        const cancelled = await this.ex.cancelAll(this.config.marketId).catch(() => false);
+        const cancelled = await this._cancelAllTracked('停止并平仓');
         if (cancelled !== false) this._exchangeOpenOrders = 0;
         if (closePosition && typeof this.ex.closePosition === 'function') {
           await this._closeWithConfirm(this.config.marketId);
@@ -328,7 +339,7 @@ export class GridBot {
     }
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
-    const cancelled = await this.ex.cancelAll(this.config.marketId).catch(() => false);
+    const cancelled = await this._cancelAllTracked(closePosition ? '停止并平仓' : '停止网格');
     if (cancelled !== false) this._exchangeOpenOrders = 0;
     if (cancelled === false) this._alert('❌ 未能确认撤销全部挂单，请立即到交易所人工核对。');
     this.active.clear();
@@ -358,10 +369,7 @@ export class GridBot {
     this._stopReconcileTimer();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
-    const cancelled = await this.ex.cancelAll(this.config.marketId).catch((e) => {
-      this._alert('撤单失败: ' + (e?.message || e));
-      return false;
-    });
+    const cancelled = await this._cancelAllTracked('一键撤销挂单');
     if (cancelled !== false) this._exchangeOpenOrders = 0;
     this.active.clear();
     this.running = false;
@@ -396,7 +404,7 @@ export class GridBot {
       throw new Error(`保证金不足以支持新区间：约需 ${round2(requiredMargin)} USDC，当前可用 ${round2(available)} USDC。请缩小区间/减少格数后再试。`);
     }
 
-    const cancelled = await this.ex.cancelAll(this.config.marketId).catch(() => false);
+    const cancelled = await this._cancelAllTracked('调整区间撤销旧挂单');
     if (cancelled === false && this.ex.mode === 'live') {
       throw new Error('未能确认撤销旧区间挂单，已取消调整，避免新旧网格叠加。请到 Decibel 核对。');
     }
@@ -411,7 +419,7 @@ export class GridBot {
       let placed = 0;
       for (const s of seeds) if (await this._place({ ...s, opening: true })) placed++;
       if (this.ex.mode === 'live' && placed !== seeds.length) {
-        const rolledBack = await this.ex.cancelAll(this.config.marketId).catch(() => false);
+        const rolledBack = await this._cancelAllTracked('区间调整失败回滚');
         this.active.clear();
         this.running = false;
         this.ex.off('fill', this._onFill);
@@ -489,15 +497,21 @@ export class GridBot {
         return null;
       });
       if (r?.orderId) {
-        this.active.set(String(r.orderId), {
+        const orderId = String(r.orderId);
+        const placedPrice = Number(r.price ?? o.price);
+        const placedSize = Number(r.sizeBase ?? sizeBase);
+        this.active.set(orderId, {
           levelIndex: lvl,
           side: o.side,
-          price: Number(r.price ?? o.price),
-          sizeBase: Number(r.sizeBase ?? sizeBase),
+          price: placedPrice,
+          sizeBase: placedSize,
           opening,
           recovery: !!o.recovery,
           placedAt: Date.now(),
         });
+        const purpose = o.recovery ? '回收' : (opening ? '开仓' : '补挂平仓');
+        this._activity(`${purpose}挂单 · ${sideName(o.side)} ${round6(placedSize)} @ ${round2(placedPrice)} · 网格 ${lvl} · #${orderId}`, 'order');
+        this._changed();
         return true;
       }
       return false;
@@ -544,6 +558,7 @@ export class GridBot {
     this.stats.volume = round2(this.stats.volume + fillPrice * fillSize);
     this.fills.unshift({ t: Date.now(), side: f.side, price: fillPrice, size: fillSize, level: levelIndex });
     if (this.fills.length > 50) this.fills.pop();
+    this._activity(`订单成交 · ${sideName(f.side)} ${round6(fillSize)} @ ${round2(fillPrice)} · 网格 ${levelIndex} · #${id}`, 'fill');
 
     const isRecovery = !!(act && act.recovery);
     const closing = isRecovery ? true
@@ -647,8 +662,12 @@ export class GridBot {
     const ids = [...this.active].filter(([, o]) => o.recovery).map(([id]) => id);
     if (!ids.length) return;
     for (const id of ids) {
-      await this.ex.cancelOrder?.(this.config.marketId, id)?.catch?.(() => {});
-      this.active.delete(id);
+      const info = this.active.get(id);
+      try {
+        await this.ex.cancelOrder?.(this.config.marketId, id);
+        this.active.delete(id);
+        this._activity(formatCancelActivity(info, id, '撤销回收阶梯'), 'cancel');
+      } catch { /* leave it tracked so reconciliation can retry */ }
     }
     this._alert(`已撤销 ${ids.length} 个回收阶梯挂单。`);
     this._changed();
@@ -717,7 +736,7 @@ export class GridBot {
     this._stopReconcileTimer();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
-    const cancelled = await this.ex.cancelAll(mId).catch(() => false);
+    const cancelled = await this._cancelAllTracked('立即平仓前撤单', mId);
     if (cancelled === false) this._alert('❌ 未能确认撤销全部挂单，仍将继续尝试平仓；请立即到交易所人工核对。');
     this.active.clear();
     this._retryQueue = [];
@@ -819,7 +838,7 @@ export class GridBot {
     this._recoveryOccupied = new Set();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
-    this.ex.cancelAll?.(this.config.marketId)?.catch?.(() => {});
+    this._cancelAllTracked('回收完成撤单').catch(() => {});
     this.active.clear();
     this.running = false;
     this._alert('回收完成：持仓已全部减完，回收阶梯已停止。');
@@ -909,7 +928,12 @@ export class GridBot {
         }
         continue;
       }
-      try { await this.ex.cancelOrder(this.config.marketId, o.orderId); this.active.delete(String(o.orderId)); trimmed++; }
+      try {
+        await this.ex.cancelOrder(this.config.marketId, o.orderId);
+        this.active.delete(String(o.orderId));
+        this._activity(formatCancelActivity({ levelIndex: idx, side: o.side, price: px, sizeBase: o.sizeBase }, o.orderId, '对账撤除重复'), 'cancel');
+        trimmed++;
+      }
       catch { /* leave it; next cycle retries */ }
     }
     if (recovery) this._recoveryOccupied = occupied;
@@ -934,9 +958,34 @@ export class GridBot {
   }
   _stopReconcileTimer() { if (this._reconTimer) { clearInterval(this._reconTimer); this._reconTimer = null; } }
 
+  /** Cancel a market's resting orders and record every locally tracked order. */
+  async _cancelAllTracked(reason, marketId = this.config?.marketId) {
+    const tracked = [...this.active.entries()];
+    try {
+      const cancelled = await this.ex.cancelAll(marketId);
+      if (cancelled === false) return false;
+      if (tracked.length) {
+        for (const [id, info] of tracked) this._activity(formatCancelActivity(info, id, reason), 'cancel');
+      } else {
+        this._activity(`${reason} · 已发送全撤指令（本地无已跟踪挂单）`, 'cancel');
+      }
+      this._changed();
+      return cancelled;
+    } catch (e) {
+      this._alert(`撤单失败: ${e?.message || e}`);
+      return false;
+    }
+  }
+
+  _activity(message, type = 'system') {
+    this.activity.unshift({ t: Date.now(), type, message });
+    if (this.activity.length > 200) this.activity.pop();
+  }
+
   _alert(message) {
     this.alerts.unshift({ t: Date.now(), message });
     if (this.alerts.length > 30) this.alerts.pop();
+    this._activity(message, /失败|未能|风险|⚠|❌/.test(message) ? 'warning' : 'system');
   }
 
   /** Per-exchange health classification surfaced to the dashboard. */
@@ -1011,11 +1060,26 @@ export class GridBot {
       startBalance: this.startBalance != null ? round2(this.startBalance) : null,
       fills: this.fills.slice(0, 20),
       alerts: this.alerts.slice(0, 12),
+      activity: this.activity.slice(0, 100),
     };
   }
 }
 
 function labelMode(m) { return m === 'long' ? '做多网格' : m === 'short' ? '做空网格' : '中性网格'; }
+
+function sideName(side) { return side === 'buy' ? '买入' : '卖出'; }
+
+function formatCancelActivity(info, id, reason) {
+  const details = info
+    ? ` · ${sideName(info.side)} ${round6(Number(info.sizeBase) || 0)} @ ${round2(Number(info.price) || 0)} · 网格 ${info.levelIndex}`
+    : '';
+  return `${reason}${details} · #${id}`;
+}
+
+function restoreActivity(snap) {
+  if (Array.isArray(snap.activity)) return snap.activity.slice(0, 200);
+  return Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30).map((item) => ({ ...item, type: 'system' })) : [];
+}
 
 function round2(x) { return Math.round(x * 100) / 100; }
 function round6(x) { return Math.round(x * 1e6) / 1e6; }
