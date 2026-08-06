@@ -118,8 +118,16 @@
     .panel-head .push { margin-left: auto; }
     .panel-body { padding: 18px; }
     .chart-wrap { height: 320px; position: relative; }
-    #price-chart { width: 100%; height: 100%; display: block; }
+    #price-chart { width: 100%; height: 100%; display: block; cursor: crosshair; }
+    #price-chart.dragging { cursor: grabbing; }
     .chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; pointer-events: none; }
+    .chart-head-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .chart-interval { display: grid; grid-template-columns: repeat(4,auto); padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+    .chart-interval button { width: 34px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 750; }
+    .chart-interval button.active { background: var(--white); color: var(--ink); box-shadow: 0 1px 3px rgba(24,32,31,.1); }
+    .chart-mode { display: grid; grid-template-columns: repeat(2,auto); padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+    .chart-mode button { height: 28px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 750; }
+    .chart-mode button.active { background: var(--white); color: var(--ink); box-shadow: 0 1px 3px rgba(24,32,31,.1); }
     .trend-strip { border-top: 1px solid var(--line); display: grid; grid-template-columns: 120px 120px minmax(0,1fr); }
     .trend-cell { min-height: 76px; padding: 13px 16px; border-right: 1px solid var(--line); }
     .trend-cell:last-child { border-right: 0; }
@@ -192,6 +200,9 @@
       .metric { min-height: 92px; padding: 13px; }
       .metric strong { font-size: 17px; }
       .chart-wrap { height: 250px; }
+      .chart-panel-head { height: auto; padding-top: 9px; padding-bottom: 9px; flex-wrap: wrap; }
+      .chart-head-tools { width: 100%; margin-left: 0; gap: 5px; justify-content: space-between; }
+      .chart-mode button { padding: 0 7px; }
       .trend-strip { grid-template-columns: 1fr 1fr; }
       .trend-cell:nth-child(2) { border-right: 0; }
       .trend-cell:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
@@ -300,7 +311,22 @@
 
     <section class="workspace">
       <article class="panel">
-        <header class="panel-head"><h2>价格轨迹</h2><button id="trend-btn" class="btn small push">刷新趋势</button></header>
+        <header class="panel-head chart-panel-head">
+          <h2>价格轨迹</h2>
+          <div class="chart-head-tools">
+            <div id="chart-interval" class="chart-interval" aria-label="K线周期">
+              <button data-chart-interval="1">1s</button>
+              <button class="active" data-chart-interval="60">1m</button>
+              <button data-chart-interval="300">5m</button>
+              <button data-chart-interval="3600">1h</button>
+            </div>
+            <div id="chart-mode" class="chart-mode" aria-label="图表缩放模式">
+              <button class="active" data-chart-mode="focus" title="恢复自动缩放">自动缩放</button>
+              <button data-chart-mode="grid">全网格</button>
+            </div>
+            <button id="trend-btn" class="btn small">刷新趋势</button>
+          </div>
+        </header>
         <div class="panel-body chart-wrap">
           <canvas id="price-chart"></canvas>
           <div id="chart-empty" class="chart-empty">等待价格数据</div>
@@ -495,7 +521,7 @@
     const queryToken = new URLSearchParams(location.search).get('token');
     if (queryToken) sessionStorage.setItem('gridpilot-token', queryToken);
     const token = sessionStorage.getItem('gridpilot-token') || '';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], prices: [], mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
 
     function apiUrl(path) {
       const url = new URL(path, location.origin);
@@ -548,6 +574,8 @@
     function bindEvents() {
       $('market-select').addEventListener('change', async () => {
         state.market = state.markets.find((market) => String(market.marketId) === $('market-select').value);
+        state.liveSecondCandles = [];
+        state.chartManualRange = null;
         renderMarket();
         await loadTrend();
       });
@@ -559,8 +587,30 @@
         document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
       });
       ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
-        $(id).addEventListener('input', () => { state.formDirty = true; drawChart(); });
+        $(id).addEventListener('input', () => { state.formDirty = true; state.chartManualRange = null; drawChart(); });
       });
+      $('chart-mode').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-chart-mode]');
+        if (!button) return;
+        state.chartMode = button.dataset.chartMode;
+        state.chartManualRange = null;
+        document.querySelectorAll('#chart-mode button').forEach((item) => item.classList.toggle('active', item === button));
+        drawChart();
+      });
+      $('chart-interval').addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-chart-interval]');
+        if (!button) return;
+        state.chartInterval = Number(button.dataset.chartInterval);
+        state.chartManualRange = null;
+        document.querySelectorAll('#chart-interval button').forEach((item) => item.classList.toggle('active', item === button));
+        await loadTrend();
+      });
+      $('price-chart').addEventListener('wheel', zoomChart, { passive: false });
+      $('price-chart').addEventListener('dblclick', resetChartZoom);
+      $('price-chart').addEventListener('pointerdown', startChartDrag);
+      $('price-chart').addEventListener('pointermove', moveChartDrag);
+      $('price-chart').addEventListener('pointerup', endChartDrag);
+      $('price-chart').addEventListener('pointercancel', endChartDrag);
       $('trend-btn').addEventListener('click', loadTrend);
       $('smart-btn').addEventListener('click', runSmartFill);
       $('conservative-btn').addEventListener('click', () => fillSuggested(true));
@@ -962,10 +1012,16 @@
       if (!state.market) return;
       setBusyButton($('trend-btn'), true, '分析中');
       try {
-        const result = await request(`/api/trend?marketId=${state.market.marketId}&intervalSec=3600`);
+        const analysisInterval = state.chartInterval === 1 ? 60 : state.chartInterval;
+        const result = await request(`/api/trend?marketId=${state.market.marketId}&intervalSec=${analysisInterval}`);
         state.analysis = result.analysis;
-        state.candles = result.candles || [];
+        if (state.chartInterval !== 1) state.candles = (result.candles || []).map(normalizeChartCandle).filter(Boolean);
         state.prices = state.candles.map((candle) => ({ time: candle.time, value: candle.close })).filter((point) => Number.isFinite(point.value));
+        state.livePrices = [];
+        if (state.chartInterval === 1 && !state.liveSecondCandles.length) {
+          const price = Number(state.bot?.lastPrice || state.market?.lastPrice);
+          if (price > 0) updateChartCandle(price, Date.now());
+        }
         renderTrend();
         drawChart();
       } catch (error) { showToast(error.message, true); }
@@ -1217,8 +1273,12 @@
           renderState(state.bot);
           const value = Number(state.bot.lastPrice);
           if (value > 0) {
-            state.prices.push({ time: Date.now(), value });
+            const point = { time: Date.now(), value };
+            state.prices.push(point);
+            state.livePrices.push(point);
+            updateChartCandle(value, point.time);
             if (state.prices.length > 180) state.prices.shift();
+            if (state.livePrices.length > 120) state.livePrices.shift();
             drawChart();
           }
         } catch { /* wait for the next event */ }
@@ -1321,6 +1381,33 @@
       $('log-list').innerHTML = alerts.map((item) => `<div class="log-item"><time>${new Date(item.t).toLocaleTimeString('zh-CN', { hour12: false })}</time><div>${escapeHtml(item.message)}</div></div>`).join('');
     }
 
+    function normalizeChartCandle(candle) {
+      const time = Number(candle?.time);
+      const open = Number(candle?.open);
+      const high = Number(candle?.high);
+      const low = Number(candle?.low);
+      const close = Number(candle?.close);
+      if (![time, open, high, low, close].every(Number.isFinite) || time <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
+      return { time: time < 1e12 ? time * 1000 : time, open, high, low, close, volume: Number(candle?.volume) || 0 };
+    }
+
+    function updateChartCandle(price, time) {
+      const interval = Math.max(1, Number(state.chartInterval) || 60);
+      const bucketMs = interval * 1000;
+      const bucket = Math.floor(time / bucketMs) * bucketMs;
+      const target = interval === 1 ? state.liveSecondCandles : state.candles;
+      let last = target.at(-1);
+      if (!last || last.time < bucket) {
+        last = { time: bucket, open: price, high: price, low: price, close: price, volume: 0 };
+        target.push(last);
+      } else if (last.time === bucket) {
+        last.high = Math.max(last.high, price);
+        last.low = Math.min(last.low, price);
+        last.close = price;
+      }
+      if (target.length > 240) target.splice(0, target.length - 240);
+    }
+
     function drawChart() {
       const canvas = $('price-chart');
       const rect = canvas.getBoundingClientRect();
@@ -1331,15 +1418,12 @@
       const ctx = canvas.getContext('2d');
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, rect.width, rect.height);
-      // Live ticks arrive ~1/s while candle history is hourly. Once enough
-      // live points exist, show just the live window so the y-axis scales to
-      // the recent range instead of the full candle span (which made the
-      // real-time tail look like a flat line).
-      const liveCount = state.prices.length - state.candles.length;
-      const points = liveCount >= 60 ? state.prices.slice(-Math.min(120, liveCount)) : state.prices.slice(-120);
-      $('chart-empty').style.display = points.length < 2 ? 'grid' : 'none';
-      if (points.length < 2) return;
-      const values = points.map((point) => point.value);
+      const sourceCandles = state.chartInterval === 1 ? state.liveSecondCandles : state.candles;
+      const candleLimit = state.chartMode === 'grid' ? 120 : 80;
+      const candles = sourceCandles.slice(-candleLimit).map(normalizeChartCandle).filter(Boolean);
+      $('chart-empty').style.display = candles.length ? 'none' : 'grid';
+      if (!candles.length) return;
+      const values = candles.flatMap((candle) => [candle.low, candle.high]);
       const formLower = Number($('lower').value);
       const formUpper = Number($('upper').value);
       const formGridCount = Number($('grid-count').value);
@@ -1354,17 +1438,27 @@
       const gridLevels = hasGrid
         ? Array.from({ length: gridCount + 1 }, (_, index) => lower + gridSpacing * index)
         : [];
-      let min = Math.min(...values, ...(hasGrid ? [lower] : []));
-      let max = Math.max(...values, ...(hasGrid ? [upper] : []));
-      const padding = Math.max((max - min) * (hasGrid ? .025 : .15), max * .0002);
+      const fullGrid = hasGrid && state.chartMode === 'grid';
+      let min = Math.min(...values, ...(fullGrid ? [lower] : []));
+      let max = Math.max(...values, ...(fullGrid ? [upper] : []));
+      const padding = Math.max((max - min) * (fullGrid ? .025 : .18), max * (fullGrid ? .0002 : .00008));
       min -= padding; max += padding;
-      const left = 16, right = 68, top = 14, bottom = 24;
+      if (state.chartManualRange && state.chartManualRange.max > state.chartManualRange.min) {
+        min = state.chartManualRange.min;
+        max = state.chartManualRange.max;
+      }
+      const left = 16, right = 68, top = 14, bottom = 30;
       const width = rect.width - left - right, height = rect.height - top - bottom;
+      state.chartView = { min, max, left, top, width, height };
       ctx.fillStyle = '#78817e'; ctx.font = '10px ui-sans-serif'; ctx.textAlign = 'left';
       if (hasGrid) {
-        const labelStep = Math.max(1, Math.ceil(gridCount / 8));
+        const pixelsPerGrid = gridSpacing / (max - min) * height;
+        const labelStep = fullGrid
+          ? Math.max(1, Math.ceil(gridCount / 8))
+          : Math.max(1, Math.ceil(14 / Math.max(pixelsPerGrid, 1)));
         gridLevels.forEach((level, index) => {
           const y = top + height - ((level - min) / (max - min)) * height;
+          if (y < top - 1 || y > top + height + 1) return;
           const boundary = index === 0 || index === gridCount;
           ctx.strokeStyle = boundary ? '#9aaba5' : '#dfe6e2';
           ctx.lineWidth = boundary ? 1.5 : 1;
@@ -1383,29 +1477,135 @@
           ctx.fillText(money(label), left + width + 8, y + 3);
         }
       }
-      ctx.beginPath();
-      points.forEach((point, index) => {
-        const x = left + width * index / (points.length - 1);
-        const y = top + height - ((point.value - min) / (max - min)) * height;
-        index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      });
-      ctx.strokeStyle = '#167a5b'; ctx.lineWidth = 2; ctx.stroke();
-      const last = points.at(-1);
-      const x = left + width, y = top + height - ((last.value - min) / (max - min)) * height;
-      // live price tag: dashed guide line + label on the right edge
       ctx.save();
-      ctx.strokeStyle = '#167a5b'; ctx.globalAlpha = .35; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.rect(left, top, width, height); ctx.clip();
+      const candleStep = width / candles.length;
+      if (state.chartInterval === 1) {
+        ctx.beginPath();
+        candles.forEach((candle, index) => {
+          const x = left + candleStep * (index + .5);
+          const yClose = top + height - ((candle.close - min) / (max - min)) * height;
+          index ? ctx.lineTo(x, yClose) : ctx.moveTo(x, yClose);
+        });
+        ctx.strokeStyle = '#167a5b'; ctx.lineWidth = 2; ctx.stroke();
+      } else {
+        const candleWidth = Math.max(1, Math.min(9, candleStep * .62));
+        candles.forEach((candle, index) => {
+          const x = left + candleStep * (index + .5);
+          const yHigh = top + height - ((candle.high - min) / (max - min)) * height;
+          const yLow = top + height - ((candle.low - min) / (max - min)) * height;
+          const yOpen = top + height - ((candle.open - min) / (max - min)) * height;
+          const yClose = top + height - ((candle.close - min) / (max - min)) * height;
+          const up = candle.close >= candle.open;
+          const color = up ? '#167a5b' : '#d85d48';
+          ctx.strokeStyle = color; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(x, yHigh); ctx.lineTo(x, yLow); ctx.stroke();
+          const bodyTop = Math.min(yOpen, yClose);
+          const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
+          ctx.fillStyle = color;
+          ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+        });
+      }
+      const last = candles.at(-1);
+      const y = top + height - ((last.close - min) / (max - min)) * height;
+      ctx.save();
+      ctx.strokeStyle = last.close >= last.open ? '#167a5b' : '#d85d48'; ctx.globalAlpha = .42; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
       ctx.restore();
-      const tag = money(last.value);
+      ctx.restore();
+      ctx.fillStyle = '#78817e'; ctx.font = '9px ui-sans-serif'; ctx.textAlign = 'center';
+      const timeLabelCount = Math.min(4, candles.length);
+      for (let i = 0; i < timeLabelCount; i++) {
+        const index = timeLabelCount === 1 ? candles.length - 1 : Math.round(i * (candles.length - 1) / (timeLabelCount - 1));
+        const x = left + candleStep * (index + .5);
+        ctx.fillText(formatChartTime(candles[index].time), x, top + height + 19);
+      }
+      const tag = money(last.close);
       ctx.font = '10px ui-sans-serif';
       const tagWidth = ctx.measureText(tag).width + 10;
       const tagY = Math.min(Math.max(y - 9, top), top + height - 18);
-      ctx.fillStyle = '#167a5b';
-      ctx.beginPath(); ctx.roundRect(left + width + 4, tagY, tagWidth, 18, 4); ctx.fill();
+      const tagX = Math.max(left, left + width - tagWidth - 4);
+      ctx.fillStyle = last.close >= last.open ? '#167a5b' : '#d85d48';
+      ctx.beginPath(); ctx.roundRect(tagX, tagY, tagWidth, 18, 4); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.textAlign = 'left';
-      ctx.fillText(tag, left + width + 9, tagY + 13);
-      ctx.fillStyle = '#167a5b'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillText(tag, tagX + 5, tagY + 13);
+    }
+
+    function formatChartTime(time) {
+      const date = new Date(time);
+      const hh = String(date.getHours()).padStart(2, '0');
+      const mm = String(date.getMinutes()).padStart(2, '0');
+      const ss = String(date.getSeconds()).padStart(2, '0');
+      if (state.chartInterval === 1) return `${hh}:${mm}:${ss}`;
+      if (state.chartInterval >= 3600) return `${date.getMonth() + 1}-${date.getDate()} ${hh}:${mm}`;
+      return `${hh}:${mm}`;
+    }
+
+    function zoomChart(event) {
+      const view = state.chartView;
+      if (!view || !(view.max > view.min)) return;
+      event.preventDefault();
+      const rect = $('price-chart').getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (event.clientY - rect.top - view.top) / view.height));
+      const anchor = view.max - ratio * (view.max - view.min);
+      const factor = Math.exp(Math.max(-120, Math.min(120, event.deltaY)) * .0025);
+      const currentSpan = view.max - view.min;
+      const reference = Math.max(Math.abs(anchor), 1);
+      const gridSpan = Number($('upper').value) - Number($('lower').value);
+      const minSpan = reference * .00004;
+      const maxSpan = Math.max(gridSpan > 0 ? gridSpan * 2 : 0, reference * .01);
+      const span = Math.min(maxSpan, Math.max(minSpan, currentSpan * factor));
+      state.chartMode = 'focus';
+      state.chartManualRange = {
+        min: anchor - (1 - ratio) * span,
+        max: anchor + ratio * span,
+      };
+      document.querySelectorAll('#chart-mode button').forEach((item) => item.classList.toggle('active', item.dataset.chartMode === 'focus'));
+      drawChart();
+    }
+
+    function resetChartZoom() {
+      state.chartMode = 'focus';
+      state.chartManualRange = null;
+      document.querySelectorAll('#chart-mode button').forEach((item) => item.classList.toggle('active', item.dataset.chartMode === 'focus'));
+      drawChart();
+    }
+
+    function startChartDrag(event) {
+      if (event.pointerType !== 'mouse' || event.button !== 0 || !state.chartView) return;
+      const canvas = $('price-chart');
+      canvas.setPointerCapture(event.pointerId);
+      canvas.classList.add('dragging');
+      state.chartDrag = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        min: state.chartView.min,
+        max: state.chartView.max,
+        height: state.chartView.height,
+      };
+    }
+
+    function moveChartDrag(event) {
+      const drag = state.chartDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      const span = drag.max - drag.min;
+      let min = drag.min + ((event.clientY - drag.startY) / drag.height) * span;
+      let max = min + span;
+      if (min <= 0) { max += 1 - min; min = 1; }
+      state.chartMode = 'focus';
+      state.chartManualRange = { min, max };
+      document.querySelectorAll('#chart-mode button').forEach((item) => item.classList.toggle('active', item.dataset.chartMode === 'focus'));
+      drawChart();
+    }
+
+    function endChartDrag(event) {
+      const drag = state.chartDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const canvas = $('price-chart');
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      canvas.classList.remove('dragging');
+      state.chartDrag = null;
     }
 
     function setActionsDisabled(disabled) {
