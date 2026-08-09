@@ -36,6 +36,16 @@
     .brand strong { display: block; font-size: 16px; }
     .brand small { color: var(--muted); font-size: 11px; }
     .top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+    .runtime-status { display: flex; align-items: center; gap: 7px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+    .runtime-node { min-height: 28px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 800; white-space: nowrap; }
+    .runtime-node::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #8b9491; vertical-align: 0; }
+    .runtime-node.ok { color: var(--green); background: var(--green-soft); border-color: #1b6948; }
+    .runtime-node.ok::before { background: var(--green); box-shadow: 0 0 8px rgba(53,208,127,.7); }
+    .runtime-node.warn { color: var(--amber); background: #302613; border-color: #6f5528; }
+    .runtime-node.warn::before { background: var(--amber); }
+    .runtime-node.error { color: var(--coral); background: var(--coral-soft); border-color: #703542; }
+    .runtime-node.error::before { background: var(--coral); }
+    .runtime-clock { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .pill { min-height: 28px; padding: 5px 9px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 11px; font-weight: 750; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
     .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8b9491; }
     .pill.live { background: var(--coral-soft); color: var(--coral); border-color: #efc8bf; }
@@ -65,6 +75,7 @@
     .metric small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
     .positive { color: var(--green) !important; }
     .negative { color: var(--coral) !important; }
+    .exchange-overview-actions { display: flex; gap: 8px; justify-content: flex-start; margin: 0 0 18px; }
     .workspace { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(360px, .85fr); gap: 18px; align-items: stretch; }
     .workspace > article.panel { min-height: 0; display: flex; flex-direction: column; }
     .safety-panel { margin-bottom: 18px; box-shadow: none; }
@@ -247,6 +258,118 @@
       .settings-actions .inline-check { width: 100%; margin-right: 0; }
       .settings-actions .btn { flex: 1; }
     }
+
+    /* Dark control-tower presentation: the trading logic remains unchanged. */
+    :root {
+      color-scheme: dark;
+      --ink: #e8eef7;
+      --muted: #8b9ab0;
+      --line: #263449;
+      --soft: #111c2e;
+      --paper: #060b14;
+      --white: #0d1625;
+      --green: #35d07f;
+      --green-soft: #103526;
+      --coral: #ff6b6b;
+      --coral-soft: #3a1d25;
+      --cyan: #46b8e8;
+      --amber: #f3b95f;
+      --shadow: 0 14px 40px rgba(0, 0, 0, .24);
+    }
+    body { background: var(--paper); color: var(--ink); }
+    .shell { width: min(1540px, calc(100% - 44px)); }
+    .topbar { background: rgba(6, 11, 20, .9); border-bottom-color: var(--line); }
+    .topbar-inner { min-height: 64px; }
+    .brand-mark { border-radius: 6px; background: #f8fafc; color: #07101e; box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
+    .brand strong { color: var(--ink); letter-spacing: .01em; }
+    .brand small { color: var(--muted); }
+    .top-meta { gap: 7px; }
+    .pill { background: #111b2c; border-color: var(--line); color: var(--muted); }
+    .pill.live { background: var(--coral-soft); color: var(--coral); border-color: #703542; }
+    .pill.paper { background: var(--green-soft); color: var(--green); border-color: #1b6948; }
+    .icon-btn { border-color: var(--line); background: #101a2b; color: var(--ink); }
+    .icon-btn:hover { border-color: #44607d; background: #16243a; }
+    .live-banner { background: #b83848; }
+    main { padding: 26px 0 52px; }
+    .subnav { display: flex; align-items: center; gap: 6px; min-height: 40px; border-bottom: 1px solid var(--line); }
+    .subnav a { color: var(--muted); text-decoration: none; font-size: 11px; font-weight: 800; padding: 10px 13px; border-bottom: 2px solid transparent; }
+    .subnav a:hover, .subnav a:focus-visible, .subnav a.active { color: var(--ink); border-bottom-color: var(--green); outline: none; }
+    .section-heading { display: flex; align-items: end; gap: 12px; margin: 18px 0 14px; }
+    .section-heading h2 { margin: 0; font-size: 14px; letter-spacing: .02em; }
+    .section-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+    .market-head { margin-bottom: 14px; }
+    .eyebrow { color: var(--green); letter-spacing: .09em; }
+    h1 { font-size: clamp(24px, 3vw, 38px); }
+    .last-price { color: var(--ink); font-size: 22px; }
+    .health { color: var(--muted); }
+    .market-picker label { color: var(--muted); }
+    select, input { border-color: var(--line); background: #0b1423; color: var(--ink); }
+    select:focus, input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(53,208,127,.14); }
+    .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+    .metric { background: linear-gradient(180deg, #101b2c 0%, #0d1625 100%); border-color: var(--line); border-radius: 6px; min-height: 94px; padding: 13px 14px; box-shadow: none; }
+    .metric span, .metric small { color: var(--muted); }
+    .metric strong { color: var(--ink); margin-top: 8px; font-size: 20px; }
+    .panel { background: #0d1625; border-color: var(--line); border-radius: 6px; box-shadow: var(--shadow); }
+    .panel-head { min-height: 52px; padding: 0 16px; border-bottom-color: var(--line); }
+    .panel-head h2 { color: var(--ink); font-size: 13px; }
+    .panel-body { padding: 16px; }
+    .safety-panel { margin-bottom: 14px; background: #0c1726; }
+    .safety-body { padding: 12px 16px; }
+    .safety-stat span, .field label, .settings-summary span, .monitor-metric span { color: var(--muted); }
+    .safety-policy, .check-list, .settings-summary { border-color: var(--line); }
+    .rescue-panel { margin-bottom: 14px; background: #251523; border-color: #6e3542; }
+    .check-row, .settings-summary div, .monitor-metric, .monitor-grid, .trend-cell, .log-item, .monitor-section-head { border-color: var(--line); }
+    .workspace { grid-template-columns: minmax(0, 1.7fr) minmax(360px, .9fr); gap: 14px; }
+    .workspace > article.panel, .workspace > aside.panel { background: #0b1422; }
+    .chart-wrap { min-height: 360px; background: #091321; }
+    #price-chart { cursor: crosshair; }
+    .chart-empty { color: var(--muted); }
+    .chart-interval, .chart-mode, .segmented { background: #0a1321; border-color: var(--line); }
+    .chart-interval button, .chart-mode button, .segmented button { color: var(--muted); }
+    .chart-interval button.active, .chart-mode button.active, .segmented button.active { background: #1a2940; color: var(--ink); box-shadow: inset 0 0 0 1px #38516e; }
+    .trend-strip { background: #0d1727; border-top-color: var(--line); }
+    .trend-cell strong { color: var(--ink); }
+    .trend-detail { color: var(--muted); }
+    .btn { border-color: var(--line); background: #111d30; color: var(--ink); }
+    .btn:hover { border-color: #46617e; background: #17263d; }
+    .btn.primary { background: var(--green); border-color: var(--green); color: #07100d; }
+    .btn.primary:hover { background: #55df93; }
+    .btn.danger { color: var(--coral); border-color: #713746; background: #2a1821; }
+    .status-box { background: #101c2e; color: var(--muted); border: 1px solid var(--line); }
+    .trade-monitor { margin-top: 14px; }
+    .monitor-body { min-height: 300px; }
+    .grid-visual, .log-list { height: 252px; }
+    .rung { background: #293950; }
+    .price-pointer { color: var(--muted); }
+    .log-kind.order { color: var(--cyan); }
+    .log-kind.fill { color: var(--green); }
+    .log-kind.cancel, .log-kind.warning { color: var(--coral); }
+    .empty-row { color: var(--muted); }
+    .settings-panel { margin-top: 14px; margin-bottom: 0; background: #0b1422; }
+    .settings-toggle:hover { background: #111d30; }
+    .settings-chevron { color: var(--muted); }
+    .modal-backdrop { background: rgba(1, 5, 12, .72); }
+    .modal { background: #0d1625; border: 1px solid var(--line); }
+    .modal-grid { border-color: var(--line); }
+    .modal-grid span { border-color: var(--line); }
+    .modal-grid span:nth-child(odd) { background: #111d30; }
+    .toast { background: #16243a; border: 1px solid #304866; }
+    .toast.error { background: #672d3b; border-color: #8a4354; }
+    @media (max-width: 1100px) {
+      .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .shell { width: min(100% - 24px, 1540px); }
+      .subnav { overflow-x: auto; }
+      .subnav a { flex: 0 0 auto; }
+      .section-heading { align-items: start; flex-direction: column; gap: 4px; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .runtime-status { display: none; }
+      .exchange-overview-actions { display: grid; grid-template-columns: 1fr 1fr; }
+      .exchange-overview-actions .btn { width: 100%; }
+      .workspace { grid-template-columns: 1fr; }
+      .chart-wrap { min-height: 280px; }
+    }
   </style>
 </head>
 <body>
@@ -256,6 +379,12 @@
       <div class="brand">
         <div class="brand-mark">GP</div>
         <div><strong id="brand-name">GridPilot</strong><small id="owner-name">个人版 · Decibel</small></div>
+      </div>
+      <div class="runtime-status" aria-label="运行状态">
+        <span id="runtime-exchange" class="runtime-node">DE: --</span>
+        <span id="runtime-connection" class="runtime-node">连接: --</span>
+        <span id="runtime-risk" class="runtime-node">风控: --</span>
+        <span id="runtime-clock" class="runtime-clock">--:--:--</span>
       </div>
       <div class="top-meta">
         <span id="mode-pill" class="pill paper">PAPER</span>
@@ -267,8 +396,19 @@
       </div>
     </div>
   </header>
+  <nav class="subnav shell" aria-label="控制台导航">
+    <a href="#overview">总览</a>
+    <a href="#decibel-panel">Decibel</a>
+    <a href="#risk-panel">风控</a>
+    <a href="#ai-settings-panel">AI 助手</a>
+    <a href="#connection-settings-panel">IP 配置</a>
+  </nav>
 
   <main class="shell">
+    <div id="overview" class="section-heading">
+      <h2>账户总览</h2>
+      <p>单交易所 · 实时行情、权益与执行状态</p>
+    </div>
     <section class="market-head">
       <div>
         <p class="eyebrow">Decibel perpetual grid</p>
@@ -290,7 +430,12 @@
       <div class="metric"><span>挂单</span><strong id="metric-orders">0</strong><small id="metric-order-sync">交易所 --</small></div>
     </section>
 
-    <section class="panel safety-panel">
+    <div class="exchange-overview-actions" aria-label="快捷入口">
+      <a class="btn small" href="#decibel-panel">进入交易台 →</a>
+      <a class="btn small" href="#ai-settings-panel">打开 AI 助手 →</a>
+    </div>
+
+    <section id="risk-panel" class="panel safety-panel">
       <header class="panel-head"><h2>实盘安全</h2><span id="preflight-badge" class="pill push">未预检</span></header>
       <div class="safety-body">
         <div class="safety-stats">
@@ -328,6 +473,10 @@
       </div>
     </section>
 
+    <div id="decibel-panel" class="section-heading">
+      <h2>Decibel 交易台</h2>
+      <p>价格轨迹、网格参数与挂单执行</p>
+    </div>
     <section class="workspace">
       <article class="panel">
         <header class="panel-head chart-panel-head">
@@ -559,8 +708,15 @@
 
     async function init() {
       bindEvents();
+      updateRuntimeClock();
+      window.setInterval(updateRuntimeClock, 1000);
       await refreshAll();
       connectStream();
+    }
+
+    function updateRuntimeClock() {
+      const now = new Date();
+      $('runtime-clock').textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
     }
 
     async function refreshAll() {
@@ -590,6 +746,10 @@
     }
 
     function bindEvents() {
+      document.querySelectorAll('.subnav a').forEach((link) => link.addEventListener('click', () => {
+        window.setTimeout(setActiveNav, 0);
+      }));
+      window.addEventListener('hashchange', setActiveNav);
       $('market-select').addEventListener('change', async () => {
         state.market = state.markets.find((market) => String(market.marketId) === $('market-select').value);
         state.liveSecondCandles = [];
@@ -672,6 +832,12 @@
       $('confirm-modal').addEventListener('click', (event) => { if (event.target === $('confirm-modal')) resolveConfirmation(null); });
       $('confirm-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('confirm-ok').click(); });
       window.addEventListener('resize', drawChart);
+      setActiveNav();
+    }
+
+    function setActiveNav() {
+      const hash = location.hash || '#overview';
+      document.querySelectorAll('.subnav a').forEach((link) => link.classList.toggle('active', link.getAttribute('href') === hash));
     }
 
     function renderApp() {
@@ -680,6 +846,9 @@
       $('owner-name').textContent = `${state.app.owner} · Decibel`;
       $('mode-pill').textContent = state.app.mode.toUpperCase();
       $('mode-pill').className = `pill ${state.app.mode}`;
+      setRuntimeNode($('runtime-exchange'), `DE: ${state.app.mode.toUpperCase()}`, state.app.mode === 'live' ? 'error' : 'warn');
+      setRuntimeNode($('runtime-connection'), '连接: 初始化', 'warn');
+      setRuntimeNode($('runtime-risk'), state.app.mode === 'live' ? '风控: 待预检' : '风控: PAPER', state.app.mode === 'live' ? 'warn' : 'ok');
       const network = state.app.network.toUpperCase();
       const dataNetwork = String(state.app.dataNetwork || '').toUpperCase();
       $('network-pill').textContent = dataNetwork && dataNetwork !== network ? `${network} · 数据 ${dataNetwork}` : network;
@@ -700,6 +869,12 @@
       $('notify-state').textContent = state.app.notificationsEnabled ? '已配置' : '未配置';
       $('notify-test-btn').disabled = !state.app.notificationsEnabled;
       $('action-status').textContent = state.app.mode === 'live' ? '实盘已解锁，请逐项核对参数' : '模拟盘已就绪，不会发送真实订单';
+    }
+
+    function setRuntimeNode(node, text, tone = '') {
+      if (!node) return;
+      node.textContent = text;
+      node.className = `runtime-node ${tone}`.trim();
     }
 
     function renderConnectionSettings(result) {
@@ -1284,7 +1459,11 @@
 
     function connectStream() {
       const stream = new EventSource(apiUrl('/api/stream'));
-      stream.onopen = () => { $('connection-pill').textContent = '实时连接'; $('connection-pill').classList.add('connected'); };
+      stream.onopen = () => {
+        $('connection-pill').textContent = '实时连接';
+        $('connection-pill').classList.add('connected');
+        setRuntimeNode($('runtime-connection'), '连接: 正常', 'ok');
+      };
       stream.onmessage = (event) => {
         try {
           state.bot = JSON.parse(event.data);
@@ -1301,7 +1480,11 @@
           }
         } catch { /* wait for the next event */ }
       };
-      stream.onerror = () => { $('connection-pill').textContent = '正在重连'; $('connection-pill').classList.remove('connected'); };
+      stream.onerror = () => {
+        $('connection-pill').textContent = '正在重连';
+        $('connection-pill').classList.remove('connected');
+        setRuntimeNode($('runtime-connection'), '连接: 重连中', 'warn');
+      };
     }
 
     function renderState(bot) {
@@ -1322,6 +1505,10 @@
       $('metric-volume').textContent = `成交额 ${money(bot.volume)}`;
       $('metric-orders').textContent = bot.openOrders ?? 0;
       $('metric-order-sync').textContent = `交易所 ${bot.exchangeOpenOrders ?? '--'}`;
+      const healthTone = health.status === 'error' ? 'error' : health.status === 'warn' ? 'warn' : (bot.running ? 'ok' : 'warn');
+      setRuntimeNode($('runtime-exchange'), `DE: ${bot.running ? '运行中' : '待机'}`, healthTone);
+      const riskHalted = !!bot.liveRisk?.halted;
+      setRuntimeNode($('runtime-risk'), riskHalted ? '风控: 已锁定' : (state.app?.mode === 'live' ? '风控: 正常' : '风控: PAPER'), riskHalted ? 'error' : (state.app?.mode === 'live' ? 'ok' : 'ok'));
       $('run-state').textContent = bot.running ? (bot.recovery ? '回收中' : '运行中') : '未运行';
       $('run-state').className = `pill push ${bot.running ? 'paper' : ''}`;
       $('range-state').textContent = bot.outOfRange ? '超出区间' : (bot.config ? '区间内' : '未配置');

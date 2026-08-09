@@ -86,7 +86,7 @@ export function getConfig() {
       subaccount: saved.subaccount || process.env.DECIBEL_SUBACCOUNT || '',
       apiUrl: (process.env.DECIBEL_API_URL || apiDefault).replace(/\/$/, ''),
       origin: process.env.DECIBEL_ORIGIN || 'http://127.0.0.1',
-      startBalance: boundedNumber(process.env.PAPER_BALANCE, 10000, 100, 100000000),
+      startBalance: boundedNumber(process.env.PAPER_BALANCE, 10000, 1, 100000000),
       proxy,
     },
   };

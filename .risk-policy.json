@@ -1,5 +1,5 @@
 {
-  "maxLeverage": 10,
+  "maxLeverage": 40,
   "maxGridCount": 0,
   "maxNotional": 0,
   "maxMarginPct": 35,
