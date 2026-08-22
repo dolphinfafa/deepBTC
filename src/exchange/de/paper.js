@@ -23,6 +23,7 @@ export class PaperExchange extends EventEmitter {
     this.mode = 'paper';
     this.balance = opts.startBalance ?? 10000;
     this.apiKey = opts.apiKey || '';
+    this.btcOnly = opts.btcOnly !== false;
     this.origin = opts.origin || 'http://127.0.0.1';
     // Candidate REST bases: explicit override -> mainnet -> testnet.
     this.candidates = [...new Set((opts.apiUrl ? [opts.apiUrl] : []).concat([
@@ -141,7 +142,15 @@ export class PaperExchange extends EventEmitter {
     } catch { return null; }
   }
 
-  _setMarkets(list) { this.markets.clear(); for (const m of list) this.markets.set(m.marketId, m); }
+  _setMarkets(list) {
+    this.markets.clear();
+    const selected = this.btcOnly
+      ? list.filter((market) => isBtcUsd(market))
+      : list;
+    selected.slice(0, this.btcOnly ? 1 : selected.length).forEach((m, index) => {
+      this.markets.set(this.btcOnly ? 1 : (m.marketId ?? index + 1), { ...m, marketId: this.btcOnly ? 1 : (m.marketId ?? index + 1) });
+    });
+  }
 
   async getMarkets() { return [...this.markets.values()]; }
 
@@ -292,6 +301,15 @@ export class PaperExchange extends EventEmitter {
     if (this.dataSource === 'spot' && !this._spotTimer) {
       this._spotTimer = setInterval(() => this._pollSpot(false), 15000); this._spotTimer.unref?.();
     }
+    if (this.dataSource === 'synthetic' && !this._spotTimer) {
+      this._spotTimer = setInterval(async () => {
+        if (await this._pollSpot(false)) {
+          this.dataSource = 'spot';
+          console.log('[模拟模式] 公共现货行情已恢复，切换到 Coinbase/Binance 价格源。');
+        }
+      }, 15000);
+      this._spotTimer.unref?.();
+    }
   }
 
   /** Poll public spot prices (no key needed) to anchor the simulated price path. */
@@ -434,6 +452,12 @@ function synthCandles(start, n) {
     price = close; t += 3600_000;
   }
   return out;
+}
+
+function isBtcUsd(value) {
+  const label = value && (value.displayName || value.name);
+  if (label) return String(label).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'BTCUSD';
+  return String(value?.symbol || value || '').toUpperCase() === 'BTC';
 }
 
 function normalizePosition(position) {

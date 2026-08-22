@@ -243,6 +243,8 @@ export class GridBot {
       // 区间外止损策略：'close'=冲破区间平仓（撤单+平仓+停止）；'recover'=只减仓回收阶梯
       outOfRangeAction: cfg.outOfRangeAction === 'recover' ? 'recover' : 'close',
       stepSize: market.stepSize, stepPrice: market.stepPrice,
+      minOrderSize: market.minOrderSize,
+      maxLeverage: market.maxLeverage,
     };
     this.grid = buildGrid({ lower: this.config.lower, upper: this.config.upper, gridCount: this.config.gridCount });
     this._recomputeRisk();
@@ -405,7 +407,7 @@ export class GridBot {
     }
 
     const cancelled = await this._cancelAllTracked('调整区间撤销旧挂单');
-    if (cancelled === false && this.ex.mode === 'live') {
+    if (cancelled === false) {
       throw new Error('未能确认撤销旧区间挂单，已取消调整，避免新旧网格叠加。请到 Decibel 核对。');
     }
     this.active.clear();
@@ -418,7 +420,7 @@ export class GridBot {
       const seeds = seedOrders({ levels: newGrid.levels, price, mode: this.config.mode, spacing: newGrid.spacing });
       let placed = 0;
       for (const s of seeds) if (await this._place({ ...s, opening: true })) placed++;
-      if (this.ex.mode === 'live' && placed !== seeds.length) {
+      if (placed !== seeds.length) {
         const rolledBack = await this._cancelAllTracked('区间调整失败回滚');
         this.active.clear();
         this.running = false;

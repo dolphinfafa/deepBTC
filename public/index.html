@@ -154,6 +154,15 @@
     .field label small { color: #8d9693; font-weight: 500; }
     .span-2 { grid-column: span 2; }
     .quick-row { display: flex; gap: 8px; margin-top: 14px; }
+    .readiness-panel { margin-top: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+    .readiness-head { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .readiness-head .push { margin-left: auto; }
+    .readiness-list { display: grid; gap: 5px; margin-top: 8px; max-height: 160px; overflow: auto; }
+    .readiness-item { display: block; color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .readiness-item b { display: inline-grid; place-items: center; width: 15px; height: 15px; margin-right: 5px; border-radius: 50%; background: #e4e9e6; color: var(--muted); }
+    .readiness-item.pass b { background: var(--green-soft); color: var(--green); }
+    .readiness-item.fail b { background: var(--coral-soft); color: var(--coral); }
+    .readiness-item.warn b { background: #fff2d9; color: var(--amber); }
     .btn { min-height: 40px; border: 1px solid var(--line); border-radius: 6px; padding: 0 13px; background: var(--white); color: var(--ink); font-weight: 780; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
     .btn:hover { border-color: #aab5b1; background: var(--soft); }
     .btn.primary { background: var(--green); border-color: var(--green); color: white; }
@@ -517,14 +526,18 @@
           <div class="form-grid">
             <div class="field"><label for="lower">下边界 <small>USDC</small></label><input id="lower" type="number" min="0" step="any"></div>
             <div class="field"><label for="upper">上边界 <small>USDC</small></label><input id="upper" type="number" min="0" step="any"></div>
-            <div class="field"><label for="grid-count">网格数量 <small>2-100</small></label><input id="grid-count" type="number" min="2" max="100" value="12"></div>
+            <div class="field"><label for="grid-count">网格数量 <small>10-40</small></label><input id="grid-count" type="number" min="10" max="40" value="20"></div>
             <div class="field"><label for="size-base">每格数量 <small>币</small></label><input id="size-base" type="number" min="0" step="any"></div>
             <div class="field"><label for="leverage">杠杆 <small>倍</small></label><input id="leverage" type="number" min="1" max="50" value="3"></div>
             <div class="field"><label for="oor-action">出区间动作</label><select id="oor-action"><option value="close">撤单并平仓</option><option value="recover">只减仓回收</option></select></div>
           </div>
           <div class="quick-row">
             <button id="smart-btn" class="btn">自动参数</button>
-            <button id="conservative-btn" class="btn">稳健</button>
+            <button id="conservative-btn" class="btn">波动率自适应</button>
+          </div>
+          <div id="paper-readiness" class="readiness-panel" aria-live="polite">
+            <div class="readiness-head"><strong>模拟盘就绪检查</strong><span id="paper-readiness-badge" class="pill push">检查中</span></div>
+            <div id="paper-readiness-list" class="readiness-list"><span>正在读取状态...</span></div>
           </div>
           <button id="start-btn" class="btn primary action-main">启动网格</button>
           <div class="secondary-actions">
@@ -688,10 +701,11 @@
     const queryToken = new URLSearchParams(location.search).get('token');
     if (queryToken) sessionStorage.setItem('gridpilot-token', queryToken);
     const token = sessionStorage.getItem('gridpilot-token') || '';
+    const basePath = location.pathname === '/deepBTC' || location.pathname.startsWith('/deepBTC/') ? '/deepBTC' : '';
     const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
 
     function apiUrl(path) {
-      const url = new URL(path, location.origin);
+      const url = new URL(basePath + path, location.origin);
       if (token) url.searchParams.set('token', token);
       return url.pathname + url.search;
     }
@@ -739,6 +753,7 @@
         await loadTrend();
         state.bot = await request('/api/state');
         renderState(state.bot);
+        await loadPaperReadiness();
       } catch (error) {
         showToast(error.message, true);
         $('action-status').textContent = error.message;
@@ -765,7 +780,11 @@
         document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
       });
       ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
-        $(id).addEventListener('input', () => { state.formDirty = true; state.chartManualRange = null; drawChart(); });
+        $(id).addEventListener('input', () => {
+          state.formDirty = true; state.chartManualRange = null; drawChart();
+          window.clearTimeout(state.readinessTimer);
+          state.readinessTimer = window.setTimeout(() => loadPaperReadiness(formBody()), 350);
+        });
       });
       $('chart-mode').addEventListener('click', (event) => {
         const button = event.target.closest('button[data-chart-mode]');
@@ -790,7 +809,7 @@
       $('price-chart').addEventListener('pointerup', endChartDrag);
       $('price-chart').addEventListener('pointercancel', endChartDrag);
       $('trend-btn').addEventListener('click', loadTrend);
-      $('smart-btn').addEventListener('click', runSmartFill);
+      $('smart-btn').addEventListener('click', () => fillSuggested(true));
       $('conservative-btn').addEventListener('click', () => fillSuggested(true));
       $('start-btn').addEventListener('click', startGrid);
       $('adjust-btn').addEventListener('click', adjustGrid);
@@ -985,8 +1004,8 @@
     async function runSmartFill() {
       if (state.app?.ai?.configured) {
         await runAiAnalysis();
-        if (state.aiSuggestion) applyAiSuggestion();
-      } else fillSuggested(false);
+        showToast('AI 建议已生成，请人工核对后再填入参数。');
+      } else fillSuggested(true);
     }
 
     async function runAiSentinel() {
@@ -1194,6 +1213,32 @@
       renderMarket();
     }
 
+    async function loadPaperReadiness(params = null) {
+      try {
+        const result = await request('/api/paper-readiness', params ? { method: 'POST', body: JSON.stringify(params) } : {});
+        state.paperReadiness = result;
+        renderPaperReadiness(result);
+      } catch (error) {
+        $('paper-readiness-badge').textContent = '检查失败';
+        $('paper-readiness-list').textContent = error.message;
+      }
+    }
+
+    function renderPaperReadiness(result) {
+      if (!result) return;
+      const checks = result.checks || [];
+      $('paper-readiness-badge').textContent = result.ready ? '可启动' : (result.mode === 'paper' ? '待处理' : '仅供参考');
+      $('paper-readiness-badge').className = `pill push ${result.ready ? 'paper' : result.mode === 'paper' ? 'warn' : ''}`;
+      const auto = result.autoRebalance || {};
+      const last = result.lastAutoRebalance;
+      const rows = [
+        ...checks,
+        { label: '自动调区间', status: auto.enabled ? 'pass' : 'warn', detail: auto.enabled ? '模拟盘开启 · 每 60 分钟检查 · 调整后冷却 240 分钟' : '未开启' },
+        { label: '最近自动调区间', status: 'warn', detail: last?.t ? `${new Date(last.t).toLocaleString()} · ${last.reason || '--'}` : '尚无记录' },
+      ];
+      $('paper-readiness-list').innerHTML = rows.map((check) => `<span class="readiness-item ${check.status}"><b>${check.status === 'pass' ? '✓' : check.status === 'fail' ? '×' : '!'}</b>${escapeHtml(check.label)}：${escapeHtml(check.detail || '--')}</span>`).join('');
+    }
+
     function renderMarket() {
       $('market-title').textContent = state.market?.displayName || '无可用市场';
       if (!state.market) return;
@@ -1230,40 +1275,26 @@
       $('trend-detail').textContent = analysis.detail || '--';
     }
 
-    function fillSuggested(conservative) {
+    async function fillSuggested() {
       const price = Number(state.analysis?.price || state.bot?.lastPrice || state.market?.lastPrice);
       if (!(price > 0)) return showToast('当前没有有效价格。', true);
-      if (!conservative) {
-        const step = Number(state.market?.stepPrice || 0.01);
+      try {
+        const result = await request(`/api/strategy-suggestion?marketId=${state.market.marketId}`);
+        const params = result.suggestion;
         state.formDirty = true;
-        state.mode = 'neutral';
-        document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'neutral'));
-        $('lower').value = trimNumber(snap(price - 3000, step), 8);
-        $('upper').value = trimNumber(snap(price + 3000, step), 8);
-        $('grid-count').value = 80;
-        $('size-base').value = '0.002';
-        $('leverage').value = 30;
-        $('oor-action').value = 'close';
-        $('action-status').textContent = '自动参数已填充：中性 · 现价 ±3000 · 80 格 · 每格 0.002 BTC · 30x';
-        return;
+        state.mode = params.mode;
+        document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
+        $('lower').value = trimNumber(params.lower, 8);
+        $('upper').value = trimNumber(params.upper, 8);
+        $('grid-count').value = params.gridCount;
+        $('size-base').value = trimNumber(params.sizeBase, 8);
+        $('leverage').value = params.leverage;
+        $('oor-action').value = params.outOfRangeAction;
+        $('action-status').textContent = params.rationale;
+      } catch (error) {
+        showToast(error.message, true);
       }
-      state.formDirty = true;
-      const atr = Math.max(Number(state.analysis?.atrPct || 1.2) / 100, 0.006);
-      const width = Math.max(atr * 4, 0.06);
-      const count = 10;
-      state.mode = state.analysis?.recommended || 'neutral';
-      document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
-      setSuggestedRange(price, width, count);
-      const balance = Number(state.bot?.equity || 10000);
-      const leverage = 2;
-      const rawSize = (balance * leverage * 0.08) / (count * price);
-      const step = Number(state.market?.stepSize || 0.0001);
-      const min = Number(state.market?.minOrderSize || step);
-      const size = Math.max(min, Math.floor(rawSize / step) * step);
-      $('size-base').value = trimNumber(size, 8);
-      $('leverage').value = leverage;
-      $('oor-action').value = 'close';
-      $('action-status').textContent = `稳健参数已填充，区间宽度 ${format(width * 100, 2)}%`;
+      return;
     }
 
     function setSuggestedRange(price, width, count) {
@@ -1489,6 +1520,7 @@
 
     function renderState(bot) {
       if (!bot) return;
+      if (bot.paperReadiness) renderPaperReadiness(bot.paperReadiness);
       const price = Number(bot.lastPrice || state.market?.lastPrice);
       $('last-price').textContent = price > 0 ? `${money(price)} USDC` : '--';
       const health = bot.health || {};

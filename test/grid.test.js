@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { buildGrid, seedOrders, replacementFor, isReduceOnly, rungProfit } from '../src/grid.js';
 import { normalizeProxy } from '../src/proxy.js';
 import { toChainPrice, toChainSize, fromChainPrice, fromChainSize, toLeverageBps, resolvedFillSize, pickNum } from '../src/exchange/de/decibel.js';
-import { evaluateStartRisk, LiveRiskState } from '../src/risk.js';
+import { evaluateStartRisk, LiveRiskState, evaluateStrategyParams } from '../src/risk.js';
+import { autoRebalanceGate, rangeChangedEnough } from '../src/auto-rebalance.js';
 import { GridBot } from '../src/bot.js';
+import { suggestAdaptiveGrid } from '../src/adaptive-grid.js';
 import { DailyPnlTracker } from '../src/daily-pnl.js';
 import { createNotifier } from '../src/notifier.js';
 import { updateConnectionSettings, publicConnectionSettings } from '../src/connection-settings.js';
@@ -65,6 +67,50 @@ test('uses reduce-only exits in directional modes', () => {
 });
 
 test('calculates one-rung gross profit', () => assert.equal(rungProfit(10, 0.5), 5));
+
+test('suggests a conservative BTC grid from ATR and equity', () => {
+  const result = suggestAdaptiveGrid({
+    price: 70000, atrPct: 1.2, equity: 10000,
+    market: { stepPrice: 1, stepSize: 0.00001, minOrderSize: 0.0001 },
+  });
+  assert.equal(result.mode, 'neutral');
+  assert.ok(result.lower < 70000 && result.upper > 70000);
+  assert.ok(result.gridCount >= 10 && result.gridCount <= 40);
+  assert.ok(result.sizeBase >= 0.0001);
+  assert.equal(result.leverage, 2);
+});
+
+test('locks the first strategy to BTC-USD and 10-40 grids', () => {
+  const market = { displayName: 'BTC-USD' };
+  assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 20 }, market }).ok, true);
+  assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 9 }, market }).ok, false);
+  assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 41 }, market }).ok, false);
+  assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 20 }, market: { displayName: 'ETH-USD' } }).ok, false);
+});
+
+test('paper exchange exposes only the exact BTC-USD market', async () => {
+  const exchange = new PaperExchange({ btcOnly: true });
+  exchange._setMarkets([
+    { marketId: 4, displayName: 'ETH-USD', symbol: 'ETH' },
+    { marketId: 5, displayName: 'BTC-USDC', symbol: 'BTC' },
+    { marketId: 6, displayName: 'BTC-USD', symbol: 'BTC' },
+  ]);
+  assert.deepEqual((await exchange.getMarkets()).map((market) => market.displayName), ['BTC-USD']);
+});
+
+test('auto rebalance gates require a running grid, edge, interval and cooldown', () => {
+  const base = { enabled: true, running: true, hasConfig: true, now: 1_000_000, price: 101, lower: 90, upper: 110 };
+  assert.equal(autoRebalanceGate({ ...base, running: false }).reason, 'not_running');
+  assert.equal(autoRebalanceGate({ ...base, price: 100 }).reason, 'not_near_edge');
+  assert.equal(autoRebalanceGate({ ...base, lastCheckAt: 999_000, intervalMs: 60_000 }).reason, 'check_interval');
+  assert.equal(autoRebalanceGate({ ...base, lastAdjustedAt: 999_000, cooldownMs: 120_000 }).reason, 'cooldown');
+  assert.equal(autoRebalanceGate({ ...base, price: 91 }).ok, true);
+});
+
+test('range changes below ten percent are skipped', () => {
+  assert.equal(rangeChangedEnough({ previous: { lower: 90, upper: 110 }, next: { lower: 91, upper: 109 } }), false);
+  assert.equal(rangeChangedEnough({ previous: { lower: 90, upper: 110 }, next: { lower: 92, upper: 110 } }), true);
+});
 
 test('normalizes common proxy formats', () => {
   assert.equal(normalizeProxy('127.0.0.1:7890'), 'http://127.0.0.1:7890');

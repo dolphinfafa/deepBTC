@@ -18,6 +18,8 @@
 .ai-settings.json.tmp
 .daily-pnl.json
 .daily-pnl.json.tmp
+.auto-rebalance.json
+.auto-rebalance.json.tmp
 
 # 依赖缓存
 node_modules/

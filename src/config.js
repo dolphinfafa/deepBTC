@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConnectionSettings } from './connection-settings.js';
+import { BTC_GRID_STRATEGY } from './risk.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -59,9 +60,15 @@ export function getConfig() {
     host: process.env.HOST || '127.0.0.1',
     port: boundedNumber(process.env.PORT, 8080, 1, 65535),
     dashboardToken: process.env.DASHBOARD_TOKEN || '',
+    adminUsername: process.env.ADMIN_USERNAME || '',
+    adminPassword: process.env.ADMIN_PASSWORD || '',
     enableLiveTrading: saved.tradingMode === 'live' ? !!saved.liveEnabled : bool(process.env.ENABLE_LIVE_TRADING),
     liveConfirmation: saved.tradingMode === 'live' && saved.liveEnabled ? 'I_ACCEPT_DECIBEL_LIVE_RISK' : (process.env.LIVE_CONFIRMATION || ''),
     autoResume: bool(process.env.AUTO_RESUME, true),
+    autoRebalance: bool(process.env.AUTO_REBALANCE, mode === 'paper'),
+    autoRebalanceIntervalMs: boundedNumber(process.env.AUTO_REBALANCE_INTERVAL_MINUTES, 60, 5, 1440) * 60_000,
+    autoRebalanceCooldownMs: boundedNumber(process.env.AUTO_REBALANCE_COOLDOWN_MINUTES, 240, 15, 10080) * 60_000,
+    autoLiveRebalance: bool(process.env.ENABLE_LIVE_AUTO_REBALANCE, false),
     requireFreshPreflight: bool(process.env.REQUIRE_FRESH_PREFLIGHT, true),
     riskPolicy: {
       maxLeverage: boundedNumber(savedRisk.maxLeverage ?? process.env.LIVE_MAX_LEVERAGE, 10, 1, 50),
@@ -79,6 +86,10 @@ export function getConfig() {
     },
     proxy,
     decibel: {
+      // The first release is intentionally BTC-only. Keep the environment
+      // variable documented for compatibility, but do not let it widen scope.
+      btcOnly: true,
+      strategy: BTC_GRID_STRATEGY,
       mode,
       network,
       apiKey: saved.apiKey || process.env.DECIBEL_API_KEY || '',

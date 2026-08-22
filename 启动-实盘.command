@@ -27,5 +27,5 @@ if [[ "$confirmation" != "DECIBEL" ]]; then
   exit 0
 fi
 
-(sleep 3 && open "http://127.0.0.1:8080") &
+(sleep 3 && open "http://127.0.0.1:15000") &
 npm start

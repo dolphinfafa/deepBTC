@@ -6,9 +6,12 @@ import { getConfig, saveRiskPolicy, ROOT } from './config.js';
 import { createExchange } from './exchange/de/index.js';
 import { GridBot } from './bot.js';
 import { analyzeTrend } from './trend.js';
+import { suggestAdaptiveGrid } from './adaptive-grid.js';
 import { setupProxy, checkProxy } from './proxy.js';
 import { loadSnapshot, saveSnapshot } from './persist.js';
 import { evaluateStartRisk, LiveRiskState } from './risk.js';
+import { evaluateStrategyParams, BTC_GRID_STRATEGY } from './risk.js';
+import { autoRebalanceGate, rangeChangedEnough, autoRebalanceReason } from './auto-rebalance.js';
 import { createAuditLog } from './audit.js';
 import { createNotifier } from './notifier.js';
 import { DailyPnlTracker } from './daily-pnl.js';
@@ -23,12 +26,19 @@ const audit = createAuditLog(ROOT);
 const notifier = createNotifier(cfg.notifications, ROOT);
 const dailyPnl = new DailyPnlTracker(ROOT);
 const liveRisk = new LiveRiskState(ROOT, cfg.riskPolicy);
+const AUTO_REBALANCE_FILE = path.join(ROOT, '.auto-rebalance.json');
 let lastPreflight = null;
 let emergencyInFlight = false;
 let restartRequestedAt = null;
 let lastAlertAt = 0;
 let shutdownStarted = false;
 let dailyReportRetryAt = 0;
+const persistedAutoRebalance = loadAutoRebalanceState();
+let lastAutoRebalanceAt = Number(persistedAutoRebalance.lastAdjustedAt) || 0;
+let lastAutoRebalanceCheckAt = Number(persistedAutoRebalance.lastCheckAt) || 0;
+let lastAutoRebalanceStatus = persistedAutoRebalance.last || { t: null, code: 'not_running', reason: '网格尚未运行' };
+let autoRebalanceInFlight = false;
+let lastPaperReadiness = null;
 
 validateStartup();
 
@@ -52,6 +62,7 @@ exchange.on('error', (error) => console.error('[Decibel] ' + (error?.message || 
 await initializeExchange();
 await resumeGrid();
 await refreshPersistedMarket();
+await refreshPaperReadiness();
 if (cfg.decibel.mode === 'live') liveRisk.observe(bot.getState().equity);
 dailyPnl.observe(bot.getState().equity, notifier.publicSettings().timezone);
 audit.write('server_started', { mode: cfg.decibel.mode, network: cfg.decibel.network, autoResume: cfg.autoResume });
@@ -93,8 +104,9 @@ const server = http.createServer(async (request, response) => {
   setSecurityHeaders(response);
 
   try {
-    if (url.pathname.startsWith('/api/') && !authorized(request, url)) {
-      return send(response, 401, { error: '访问令牌无效。请使用包含 ?token=... 的仪表盘地址。' });
+    if (!authorized(request, url)) {
+      response.setHeader('WWW-Authenticate', 'Basic realm="GridPilot"');
+      return send(response, 401, { error: '需要管理员用户名和密码。' });
     }
 
     if (url.pathname === '/api/app') {
@@ -105,9 +117,14 @@ const server = http.createServer(async (request, response) => {
         mode: cfg.decibel.mode,
         network: cfg.decibel.network,
         dataNetwork: exchange.network || null,
-        authRequired: !isLoopback,
+        authRequired: Boolean(cfg.adminUsername && cfg.adminPassword) || !isLoopback,
         liveEnabled: cfg.enableLiveTrading,
         autoResume: cfg.autoResume,
+        autoRebalance: cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance),
+        autoRebalanceIntervalMs: cfg.autoRebalanceIntervalMs,
+        autoRebalanceCooldownMs: cfg.autoRebalanceCooldownMs,
+        btcOnly: cfg.decibel.btcOnly,
+        strategy: cfg.decibel.strategy,
         requireFreshPreflight: cfg.requireFreshPreflight,
         riskPolicy: cfg.riskPolicy,
         notificationsEnabled: notifier.enabled,
@@ -201,9 +218,27 @@ const server = http.createServer(async (request, response) => {
       return send(response, 200, { analysis, price, candles: candles.slice(-120) });
     }
 
+    if (url.pathname === '/api/strategy-suggestion') {
+      const marketId = positiveNumber(url.searchParams.get('marketId'), 1);
+      const market = (await exchange.getMarkets()).find((item) => Number(item.marketId) === marketId);
+      if (!market) throw new Error('BTC 市场不存在，请刷新市场列表。');
+      const candles = await exchange.getCandles(marketId, 3600, 200);
+      const analysis = candles.length >= 20 ? analyzeTrend(candles) : { atrPct: null, trend: 'range' };
+      const price = await exchange.getPrice(marketId);
+      return send(response, 200, {
+        market: market.displayName,
+        suggestion: suggestAdaptiveGrid({ price, atrPct: analysis.atrPct, equity: bot.getState().equity, market, trend: analysis.trend }),
+      });
+    }
+
     if (url.pathname === '/api/preflight') {
       if (request.method === 'POST') return send(response, 200, await runPreflight());
       return send(response, 200, lastPreflight || { ready: false, t: null, checks: [], message: '尚未运行实盘预检。' });
+    }
+
+    if (url.pathname === '/api/paper-readiness') {
+      const body = request.method === 'POST' ? await readBody(request) : {};
+      return send(response, 200, await buildPaperReadiness(body.params || body));
     }
 
     if (url.pathname === '/api/audit') {
@@ -296,6 +331,7 @@ const server = http.createServer(async (request, response) => {
       return runAction(response, async () => {
         const body = await readBody(request);
         const result = await bot.stop(body);
+        await refreshPaperReadiness();
         audit.write('grid_stopped', { closePosition: body.closePosition !== false, state: compactState(result) });
         await notifySafe(`GridPilot 已停止网格${body.closePosition === false ? '，持仓保留' : '并执行平仓'}。`);
         return publicState();
@@ -304,8 +340,9 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/adjust' && request.method === 'POST') {
       return runAction(response, async () => {
         const body = await readBody(request);
-        if (cfg.decibel.mode === 'live') await validateRangeRisk(body);
+        await validateRangeRisk(body);
         const result = await bot.adjustRange(body);
+        await refreshPaperReadiness();
         audit.write('range_adjusted', { lower: body.lower, upper: body.upper, state: compactState(result) });
         return publicState();
       }, url.pathname);
@@ -428,6 +465,14 @@ setInterval(() => monitorLiveRisk().catch((error) => {
   console.error('[实盘风控] ' + (error?.message || error));
 }), 5000).unref();
 
+setInterval(() => maybeAutoRebalance().catch((error) => {
+  audit.write('auto_rebalance_failed', { error: error?.message || String(error) }, 'warn');
+}), 60_000).unref();
+
+setInterval(() => refreshPaperReadiness().catch((error) => {
+  audit.write('paper_readiness_failed', { error: error?.message || String(error) }, 'warn');
+}), 15_000).unref();
+
 setInterval(() => processDailyReport().catch((error) => {
   audit.write('daily_report_scheduler_error', { error: error?.message || String(error) }, 'warn');
 }), 30_000).unref();
@@ -452,6 +497,7 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`  http://${displayHost}:${cfg.port}`);
   console.log(`  Decibel [${cfg.decibel.mode.toUpperCase()}] [${cfg.decibel.network}]`);
   console.log(`  自动恢复: ${cfg.autoResume ? '开启' : '关闭'}`);
+  if (cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance)) console.log('  波动率自动调区间: 开启');
   if (!isLoopback) console.log('  局域网访问已启用，API 受 DASHBOARD_TOKEN 保护。');
   if (cfg.decibel.mode === 'paper') console.log('  当前为模拟盘，不会发送真实订单。');
   console.log('='.repeat(56) + '\n');
@@ -485,13 +531,24 @@ async function startGrid(body) {
   if (!market) throw new Error('所选市场不存在，请刷新市场列表。');
 
   const params = { ...body };
+  const strategyEvaluation = evaluateStrategyParams({ params, market, strategy: cfg.decibel.strategy || BTC_GRID_STRATEGY });
+  if (!strategyEvaluation.ok) {
+    audit.write('grid_start_denied', { reason: 'strategy_policy', errors: strategyEvaluation.errors, market: market.displayName }, 'warn');
+    throw new Error(strategyEvaluation.errors.join(' '));
+  }
+
+  await exchange.refreshPositions?.();
+  const existingPosition = exchange.getPosition?.(market.marketId) || null;
+  const currentPrice = await exchange.getPrice(market.marketId);
+  if (!(Number(currentPrice) > 0)) {
+    audit.write('grid_start_denied', { reason: 'invalid_price', market: market.displayName }, 'warn');
+    throw new Error('未能获取有效的 BTC 最新价格，已取消启动。');
+  }
 
   if (cfg.decibel.mode === 'live') {
     if (!liveCapsConfigured()) {
       throw new Error('实盘风险上限未完整配置：杠杆、保证金占比和维持保证金率必须有效。');
     }
-    await exchange.refreshPositions?.();
-    const existingPosition = exchange.getPosition?.(market.marketId) || null;
     const regrid = !!body.allowExistingPosition && !!existingPosition;
     if (existingPosition && !regrid) {
       audit.write('grid_start_denied', { reason: 'existing_position', market: market.displayName }, 'warn');
@@ -511,25 +568,26 @@ async function startGrid(body) {
       audit.write('grid_start_denied', { reason: riskStatus.reason }, 'error');
       throw new Error(`实盘风控已锁定：${riskStatus.reason}。停止网格后手动重置风险基线才能继续。`);
     }
-    const currentPrice = await exchange.getPrice(market.marketId);
-    const evaluation = evaluateStartRisk({
-      params,
-      market,
-      equity: bot.getState().equity,
-      policy: cfg.riskPolicy,
-      existingPosition,
-      currentPrice,
-    });
-    if (!evaluation.ok) {
-      audit.write('grid_start_denied', { reason: 'risk_policy', errors: evaluation.errors, metrics: evaluation.metrics }, 'warn');
-      throw new Error(evaluation.errors.join(' '));
-    }
-    if (evaluation.warnings.length) audit.write('grid_start_warning', { warnings: evaluation.warnings, metrics: evaluation.metrics }, 'warn');
   }
+
+  const evaluation = evaluateStartRisk({
+    params,
+    market,
+    equity: bot.getState().equity,
+    policy: cfg.riskPolicy,
+    existingPosition,
+    currentPrice,
+  });
+  if (!evaluation.ok) {
+    audit.write('grid_start_denied', { reason: 'risk_policy', errors: evaluation.errors, metrics: evaluation.metrics }, 'warn');
+    throw new Error(evaluation.errors.join(' '));
+  }
+  if (evaluation.warnings.length) audit.write('grid_start_warning', { warnings: evaluation.warnings, metrics: evaluation.metrics }, 'warn');
 
   delete params.liveConfirmation;
   delete params.allowExistingPosition;
   const result = await bot.start(params);
+  await refreshPaperReadiness();
   audit.write('grid_started', { market: market.displayName, params, state: compactState(result) }, cfg.decibel.mode === 'live' ? 'warn' : 'info');
   if (cfg.decibel.mode === 'live') {
     liveRisk.observe(result.equity);
@@ -542,6 +600,8 @@ async function startGrid(body) {
 async function validateRangeRisk(body) {
   if (!bot.running || !bot.config) throw new Error('网格未运行，无法调整区间。');
   const market = await marketById(bot.config.marketId);
+  const strategyEvaluation = evaluateStrategyParams({ params: { ...bot.config, lower: body.lower, upper: body.upper }, market, strategy: cfg.decibel.strategy || BTC_GRID_STRATEGY });
+  if (!strategyEvaluation.ok) throw new Error(strategyEvaluation.errors.join(' '));
   await exchange.refreshPositions?.();
   const currentPrice = await exchange.getPrice(market.marketId);
   const evaluation = evaluateStartRisk({
@@ -606,12 +666,140 @@ async function runPreflight() {
 function publicState() {
   const state = bot.getState();
   const notificationSettings = notifier.publicSettings();
+  const readiness = publicPaperReadiness(state);
+  const mergedReadiness = lastPaperReadiness
+    ? {
+      ...lastPaperReadiness,
+      ...readiness,
+      price: readiness.price || lastPaperReadiness.price,
+      priceValid: readiness.priceValid || lastPaperReadiness.priceValid,
+      dataSource: readiness.dataSource || lastPaperReadiness.dataSource,
+    }
+    : readiness;
   return {
     ...state,
     liveRisk: liveRisk.status(state.equity),
     dailyPnl: dailyPnl.summary(state.equity, notificationSettings.timezone),
     preflight: lastPreflight ? { t: lastPreflight.t, expiresAt: lastPreflight.expiresAt, ready: lastPreflight.ready } : null,
+    paperReadiness: mergedReadiness,
   };
+}
+
+function autoRebalancePublicState() {
+  const enabled = cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance);
+  return {
+    enabled,
+    intervalMs: cfg.autoRebalanceIntervalMs,
+    cooldownMs: cfg.autoRebalanceCooldownMs,
+    lastCheckAt: lastAutoRebalanceCheckAt || null,
+    lastAdjustedAt: lastAutoRebalanceAt || null,
+    cooldownUntil: lastAutoRebalanceAt ? lastAutoRebalanceAt + cfg.autoRebalanceCooldownMs : null,
+    inFlight: autoRebalanceInFlight,
+    last: lastAutoRebalanceStatus,
+  };
+}
+
+function loadAutoRebalanceState() {
+  try { return JSON.parse(fs.readFileSync(AUTO_REBALANCE_FILE, 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+function saveAutoRebalanceState() {
+  try {
+    const tmp = AUTO_REBALANCE_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({
+      lastAdjustedAt: lastAutoRebalanceAt || null,
+      lastCheckAt: lastAutoRebalanceCheckAt || null,
+      last: lastAutoRebalanceStatus,
+    }, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, AUTO_REBALANCE_FILE);
+  } catch { /* status persistence must not affect order management */ }
+}
+
+function publicPaperReadiness(state = bot.getState()) {
+  const params = state.config && state.config.mode !== 'recovery' ? state.config : null;
+  const strategy = cfg.decibel.strategy || BTC_GRID_STRATEGY;
+  const marketName = params?.displayName || 'BTC-USD';
+  const strategyCheck = params
+    ? evaluateStrategyParams({ params, market: { displayName: marketName }, strategy })
+    : { ok: false, errors: ['尚未填入网格参数。'] };
+  const price = Number(state.lastPrice);
+  const riskCheck = params
+    ? evaluateStartRisk({
+      params,
+      market: { displayName: marketName, minOrderSize: params.minOrderSize, maxLeverage: params.maxLeverage },
+      equity: state.equity,
+      policy: cfg.riskPolicy,
+      existingPosition: state.position,
+      currentPrice: price,
+    })
+    : { ok: false, metrics: null, errors: ['尚未配置运行中的网格参数。'], warnings: [] };
+  const noOrphanState = state.running || (!state.recovery && Number(state.openOrders || 0) === 0 && Number(state.exchangeOpenOrders || 0) <= 0);
+  return {
+    mode: cfg.decibel.mode,
+    isPaper: cfg.decibel.mode === 'paper',
+    btcOnly: cfg.decibel.btcOnly,
+    market: marketName,
+    dataSource: state.health?.dataSource || exchange.dataSource || null,
+    price: price > 0 ? price : null,
+    priceValid: price > 0,
+    autoRebalance: autoRebalancePublicState(),
+    running: !!state.running,
+    paramsConfigured: !!params,
+    strategyCheck,
+    riskCheck,
+    noOrphanState,
+    recovery: !!state.recovery,
+    ready: cfg.decibel.mode === 'paper' && price > 0 && strategyCheck.ok && riskCheck.ok && noOrphanState,
+    lastAutoRebalance: lastAutoRebalanceStatus,
+  };
+}
+
+async function buildPaperReadiness(input = {}) {
+  const markets = await exchange.getMarkets();
+  const requestedId = Number(input.marketId || bot.config?.marketId || 1);
+  const market = markets.find((item) => Number(item.marketId) === requestedId) || markets.find((item) => String(item.displayName).toUpperCase() === 'BTC-USD');
+  let price = null;
+  try { price = Number(await exchange.getPrice(market?.marketId)); } catch { /* readiness reports the failed price check */ }
+  const params = Object.keys(input || {}).length ? { ...input } : (bot.config || null);
+  const state = bot.getState();
+  const strategy = cfg.decibel.strategy || BTC_GRID_STRATEGY;
+  const strategyCheck = params && market
+    ? evaluateStrategyParams({ params, market, strategy })
+    : { ok: false, errors: [market ? '尚未填入网格参数。' : 'BTC-USD 市场不可用。'] };
+  const riskCheck = params && market
+    ? evaluateStartRisk({ params, market, equity: state.equity, policy: cfg.riskPolicy, existingPosition: exchange.getPosition?.(market.marketId) || null, currentPrice: price })
+    : { ok: false, errors: ['尚未配置网格参数。'], warnings: [], metrics: null };
+  let preflight = null;
+  try { preflight = await exchange.preflight?.(); } catch { /* readiness reports the residual-state check */ }
+  const noOrphanState = state.running || (!state.recovery && Number(state.openOrders || 0) === 0 && Number(preflight?.openOrderCount || 0) === 0);
+  const checks = [
+    { id: 'mode', label: '运行模式', status: cfg.decibel.mode === 'paper' ? 'pass' : 'warn', detail: cfg.decibel.mode === 'paper' ? 'PAPER 模拟盘' : '当前为 LIVE 实盘' },
+    { id: 'btcOnly', label: '市场范围', status: cfg.decibel.btcOnly && market && String(market.displayName).toUpperCase() === 'BTC-USD' ? 'pass' : 'fail', detail: cfg.decibel.btcOnly ? (market?.displayName || 'BTC-USD') : 'BTC-only 未锁定' },
+    { id: 'source', label: '价格数据源', status: price > 0 ? 'pass' : 'fail', detail: `${exchange.dataSource || 'unknown'} · ${price > 0 ? price : '无有效价格'}` },
+    { id: 'price', label: '有效 BTC 价格', status: price > 0 ? 'pass' : 'fail', detail: price > 0 ? String(price) : '未读取到有效价格' },
+    { id: 'strategy', label: '策略参数范围', status: strategyCheck.ok ? 'pass' : 'fail', detail: strategyCheck.ok ? `${strategy.minGridCount}-${strategy.maxGridCount} 格约束通过` : strategyCheck.errors.join(' ') },
+    { id: 'risk', label: '保证金和风险', status: riskCheck.ok ? 'pass' : 'fail', detail: riskCheck.ok ? `预计保证金 ${riskCheck.metrics?.requiredMargin ?? '--'} USDC` : riskCheck.errors.join(' ') },
+    { id: 'orders', label: '遗留挂单/恢复状态', status: noOrphanState ? 'pass' : 'fail', detail: noOrphanState ? '无异常遗留状态' : '存在未托管挂单或恢复阶梯' },
+    { id: 'running', label: '网格状态', status: state.running ? 'warn' : 'pass', detail: state.running ? '运行中' : '未运行，等待人工启动' },
+  ];
+  return {
+    ...publicPaperReadiness(state),
+    price: price > 0 ? price : null,
+    priceValid: price > 0,
+    dataSource: exchange.dataSource || null,
+    market: market?.displayName || null,
+    params,
+    paramsConfigured: !!params,
+    strategyCheck,
+    riskCheck,
+    checks,
+    ready: cfg.decibel.mode === 'paper' && checks.every((check) => check.status !== 'fail') && !!params,
+  };
+}
+
+async function refreshPaperReadiness() {
+  lastPaperReadiness = await buildPaperReadiness(bot.config || {});
 }
 
 async function monitorLiveRisk() {
@@ -626,6 +814,94 @@ async function monitorLiveRisk() {
   if (cfg.decibel.mode !== 'live') return;
   const riskStatus = liveRisk.observe(state.equity);
   if (state.running && riskStatus.halted) await emergencyStop(`自动风控触发：${riskStatus.reason}`);
+}
+
+async function maybeAutoRebalance() {
+  const now = Date.now();
+  const enabled = cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance);
+  if (autoRebalanceInFlight) return;
+  const state = bot.getState();
+  const gate = autoRebalanceGate({
+    enabled,
+    running: state.running,
+    hasConfig: !!bot.config && bot.config.mode !== 'recovery',
+    now,
+    lastCheckAt: lastAutoRebalanceCheckAt,
+    intervalMs: cfg.autoRebalanceIntervalMs,
+    lastAdjustedAt: lastAutoRebalanceAt,
+    cooldownMs: cfg.autoRebalanceCooldownMs,
+    price: state.lastPrice,
+    lower: bot.config?.lower,
+    upper: bot.config?.upper,
+    edgePct: cfg.decibel.strategy?.edgeTriggerPct || BTC_GRID_STRATEGY.edgeTriggerPct,
+  });
+  if (!gate.ok) {
+    // Keep the API honest about the last scheduler decision without treating a
+    // skipped check as a successful adjustment or starting the cooldown.
+    if (gate.reason !== 'check_interval' && gate.reason !== 'disabled') {
+      lastAutoRebalanceStatus = { t: now, code: gate.reason, reason: autoRebalanceReason(gate.reason) };
+    }
+    return;
+  }
+  lastAutoRebalanceCheckAt = now;
+  lastAutoRebalanceStatus = { t: now, code: 'checking', reason: '正在读取 BTC 1h K 线和 ATR' };
+
+  autoRebalanceInFlight = true;
+  try {
+    const market = await marketById(bot.config.marketId);
+    const latestPrice = Number(await exchange.getPrice(market.marketId));
+    const latestGate = autoRebalanceGate({
+      enabled, running: true, hasConfig: true, now, lastCheckAt: 0,
+      lastAdjustedAt: lastAutoRebalanceAt, cooldownMs: cfg.autoRebalanceCooldownMs,
+      price: latestPrice, lower: bot.config.lower, upper: bot.config.upper,
+      edgePct: cfg.decibel.strategy?.edgeTriggerPct || BTC_GRID_STRATEGY.edgeTriggerPct,
+    });
+    if (!latestGate.ok) {
+      lastAutoRebalanceStatus = { t: now, code: latestGate.reason, reason: autoRebalanceReason(latestGate.reason) };
+      return;
+    }
+    const lower = Number(bot.config.lower), upper = Number(bot.config.upper);
+    const candles = await exchange.getCandles(market.marketId, 3600, 200);
+    const analysis = candles.length >= 20 ? analyzeTrend(candles) : { atrPct: null, trend: 'range' };
+    const suggestion = suggestAdaptiveGrid({
+      price: latestPrice,
+      atrPct: analysis.atrPct,
+      equity: bot.getState().equity,
+      market,
+      trend: analysis.trend,
+    });
+    const movedEnough = rangeChangedEnough({
+      previous: { lower, upper },
+      next: suggestion,
+      minChangePct: cfg.decibel.strategy?.minRangeChangePct || BTC_GRID_STRATEGY.minRangeChangePct,
+    });
+    if (!movedEnough) {
+      lastAutoRebalanceStatus = { t: now, code: 'insufficient_change', reason: autoRebalanceReason('insufficient_change') };
+      audit.write('auto_rebalance_skipped', { reason: 'insufficient_change', previous: { lower, upper }, next: { lower: suggestion.lower, upper: suggestion.upper } });
+      return;
+    }
+    await validateRangeRisk({ lower: suggestion.lower, upper: suggestion.upper });
+    const state = await bot.adjustRange({ lower: suggestion.lower, upper: suggestion.upper });
+    lastAutoRebalanceAt = now;
+    lastAutoRebalanceStatus = { t: now, code: 'adjusted', reason: autoRebalanceReason('adjusted') };
+    saveAutoRebalanceState();
+    audit.write('auto_rebalanced', {
+      market: market.displayName,
+      previous: { lower, upper },
+      next: { lower: suggestion.lower, upper: suggestion.upper },
+      gridCount: state.config?.gridCount,
+      atrPct: suggestion.atrPct,
+    }, 'warn');
+    await refreshPaperReadiness();
+  } catch (error) {
+    const detail = error?.message || String(error);
+    const code = /保证金|风险|上限|最小/.test(detail) ? 'risk_rejected' : 'failed';
+    lastAutoRebalanceStatus = { t: now, code, reason: autoRebalanceReason(code, detail) };
+    saveAutoRebalanceState();
+    throw error;
+  } finally {
+    autoRebalanceInFlight = false;
+  }
 }
 
 async function processDailyReport() {
@@ -787,6 +1063,17 @@ function normalizeMarket(value) {
 }
 
 function authorized(request, url) {
+  if (cfg.adminUsername && cfg.adminPassword) {
+    const header = String(request.headers.authorization || '');
+    if (!header.startsWith('Basic ')) return false;
+    let decoded;
+    try { decoded = Buffer.from(header.slice(6), 'base64').toString('utf8'); }
+    catch { return false; }
+    const separator = decoded.indexOf(':');
+    if (separator < 0) return false;
+    return constantTimeEqual(decoded.slice(0, separator), cfg.adminUsername)
+      && constantTimeEqual(decoded.slice(separator + 1), cfg.adminPassword);
+  }
   if (isLoopback) return true;
   const header = request.headers['x-gridpilot-token'];
   const supplied = String(header || url.searchParams.get('token') || '');

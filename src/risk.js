@@ -1,6 +1,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export const BTC_GRID_STRATEGY = Object.freeze({
+  market: 'BTC-USD',
+  minGridCount: 10,
+  maxGridCount: 40,
+  defaultLeverage: 2,
+  targetMarginPct: 8,
+  edgeTriggerPct: 20,
+  minRangeChangePct: 10,
+});
+
+/** Validate the fixed first-version BTC strategy constraints. */
+export function evaluateStrategyParams({ params = {}, market, strategy = BTC_GRID_STRATEGY } = {}) {
+  const errors = [];
+  const marketName = String(market?.displayName || market?.name || market?.symbol || '').toUpperCase();
+  if (marketName.replace(/[^A-Z0-9]/g, '') !== String(strategy.market).replace(/[^A-Z0-9]/g, '')) {
+    errors.push(`首版策略只允许 ${strategy.market}，当前市场为 ${marketName || '未知'}。`);
+  }
+  const gridCount = Number(params.gridCount);
+  if (!Number.isInteger(gridCount) || gridCount < strategy.minGridCount || gridCount > strategy.maxGridCount) {
+    errors.push(`网格数量必须在 ${strategy.minGridCount}-${strategy.maxGridCount} 格范围内。`);
+  }
+  if (!['neutral', 'long', 'short'].includes(String(params.mode || 'neutral'))) {
+    errors.push('网格方向无效，只允许中性、做多或做空。');
+  }
+  if (!['close', 'recover'].includes(String(params.outOfRangeAction || 'close'))) {
+    errors.push('区间外动作无效，只允许撤单并平仓或只减仓回收。');
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function evaluateStartRisk({ params, market, equity, policy, existingPosition = null, currentPrice = null }) {
   const errors = [];
   const warnings = [];

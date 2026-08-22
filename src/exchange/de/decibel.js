@@ -87,11 +87,16 @@ export function pickNum(obj, ...keys) {
   return null;
 }
 
+function isBtcUsd(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '') === 'BTCUSD';
+}
+
 export class DecibelExchange extends EventEmitter {
   constructor(opts = {}) {
     super();
     this.mode = 'live';
     this.network = opts.network === 'testnet' ? 'testnet' : 'mainnet';
+    this.btcOnly = opts.btcOnly !== false;
     this.net = NETWORKS[this.network];
     this.apiKey = opts.apiKey;                 // Geomi API key (read + fullnode auth)
     this.privateKey = opts.privateKey;         // Ed25519 hex (API wallet)
@@ -231,7 +236,8 @@ export class DecibelExchange extends EventEmitter {
     let prices = [];
     try { prices = await this._retry(() => this.read.marketPrices.getAll(), '价格快照', 3); } catch { /* lastPrice optional */ }
     const pxByAddr = new Map((prices || []).map((p) => [String(p.market ?? p.market_addr ?? ''), p]));
-    const open = (list || []).filter((m) => String(m.mode ?? 'Open') === 'Open');
+    const open = (list || []).filter((m) => String(m.mode ?? 'Open') === 'Open')
+      .filter((m) => !this.btcOnly || isBtcUsd(m.market_name));
     let id = 1;
     for (const m of open) {
       const addr = String(m.market_addr);

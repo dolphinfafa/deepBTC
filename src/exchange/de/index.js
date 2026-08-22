@@ -11,8 +11,9 @@ export function createExchange(cfg) {
       apiKey: cfg.apiKey,
       privateKey: cfg.privateKey,
       subaccount: cfg.subaccount,
+      btcOnly: cfg.btcOnly,
       apiUrl: cfg.apiUrl, origin: cfg.origin, network: cfg.network,
     });
   }
-  return new PaperExchange({ apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, origin: cfg.origin, network: cfg.network, startBalance: cfg.startBalance });
+  return new PaperExchange({ apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, origin: cfg.origin, network: cfg.network, btcOnly: cfg.btcOnly, startBalance: cfg.startBalance });
 }
