@@ -18,5 +18,5 @@ if [[ ! -d node_modules ]]; then
   npm ci --no-audit --no-fund
 fi
 
-(sleep 3 && open "http://127.0.0.1:15000") &
+(sleep 3 && open "http://127.0.0.1:15000/paper") &
 npm start

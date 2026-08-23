@@ -31,6 +31,6 @@ echo 实盘订单将发送到 Decibel。请确认网页端可人工接管。
 set /p CONFIRM="输入 DECIBEL 继续: "
 if /i not "%CONFIRM%"=="DECIBEL" exit /b 0
 
-start "" /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:15000"
+start "" /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:15000/live"
 node src/server.js
 pause

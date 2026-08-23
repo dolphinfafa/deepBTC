@@ -27,7 +27,7 @@ npm test
 npm start
 ```
 
-默认地址为 `http://127.0.0.1:15000`。Python 不参与本项目运行。公网部署通过 Nginx 映射到 `/deepBTC/`，应用层使用 HTTP Basic Auth。
+模拟盘入口为 `http://127.0.0.1:15000/paper`，实盘入口为 `http://127.0.0.1:15000/live`。两个页面使用不同配色和模式专属控件；页面与服务实际模式不一致时交易操作保持锁定。Python 不参与本项目运行。公网部署通过 Nginx 映射到 `/deepBTC/`，应用层使用 HTTP Basic Auth。
 
 ## BTC 网格约束
 

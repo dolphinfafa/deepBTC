@@ -6,6 +6,7 @@ import { evaluateStartRisk, LiveRiskState, evaluateStrategyParams } from '../src
 import { autoRebalanceGate, rangeChangedEnough } from '../src/auto-rebalance.js';
 import { GridBot } from '../src/bot.js';
 import { suggestAdaptiveGrid } from '../src/adaptive-grid.js';
+import { projectDashboardState, resolveDashboardRoute } from '../src/dashboard-routing.js';
 import { DailyPnlTracker } from '../src/daily-pnl.js';
 import { createNotifier } from '../src/notifier.js';
 import { updateConnectionSettings, publicConnectionSettings } from '../src/connection-settings.js';
@@ -110,6 +111,46 @@ test('auto rebalance gates require a running grid, edge, interval and cooldown',
 test('range changes below ten percent are skipped', () => {
   assert.equal(rangeChangedEnough({ previous: { lower: 90, upper: 110 }, next: { lower: 91, upper: 109 } }), false);
   assert.equal(rangeChangedEnough({ previous: { lower: 90, upper: 110 }, next: { lower: 92, upper: 110 } }), true);
+});
+
+test('routes paper and live dashboards to distinct page views', () => {
+  assert.deepEqual(resolveDashboardRoute('/'), { matched: true, view: null });
+  assert.deepEqual(resolveDashboardRoute('/paper'), { matched: true, view: 'paper' });
+  assert.deepEqual(resolveDashboardRoute('/paper.html'), { matched: true, view: 'paper' });
+  assert.deepEqual(resolveDashboardRoute('/live/'), { matched: true, view: 'live' });
+  assert.deepEqual(resolveDashboardRoute('/api/state'), { matched: false, view: null });
+});
+
+test('dashboard state never exposes a running paper bot as a running live bot', () => {
+  const paperState = {
+    mode: 'paper', running: true, config: { displayName: 'BTC-USD' },
+    openOrders: 28, exchangeOpenOrders: 28, equity: 10_000,
+    position: { sizeBase: 0.01 }, totalPnl: 12.5,
+    activity: [{ t: 1, message: 'paper fill' }], lastPrice: 77_000,
+  };
+  const liveView = projectDashboardState(paperState, 'paper', 'live');
+
+  assert.equal(liveView.runtimeAvailable, false);
+  assert.equal(liveView.runtimeMode, 'paper');
+  assert.equal(liveView.mode, 'live');
+  assert.equal(liveView.running, false);
+  assert.equal(liveView.config, null);
+  assert.equal(liveView.openOrders, 0);
+  assert.equal(liveView.position, null);
+  assert.equal(liveView.equity, null);
+  assert.equal(liveView.totalPnl, null);
+  assert.deepEqual(liveView.activity, []);
+  assert.equal(liveView.lastPrice, 77_000);
+  assert.equal(liveView.health.reason, '实盘服务未启动');
+});
+
+test('dashboard state keeps the active mode state unchanged', () => {
+  const state = { mode: 'paper', running: true, openOrders: 12, equity: 10_001 };
+  const paperView = projectDashboardState(state, 'paper', 'paper');
+  assert.equal(paperView.runtimeAvailable, true);
+  assert.equal(paperView.running, true);
+  assert.equal(paperView.openOrders, 12);
+  assert.equal(paperView.equity, 10_001);
 });
 
 test('normalizes common proxy formats', () => {

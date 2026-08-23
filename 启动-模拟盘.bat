@@ -23,7 +23,7 @@ if not exist "node_modules" (
   )
 )
 
-echo [启动] GridPilot 模拟盘：http://127.0.0.1:15000
-start "" /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:15000"
+echo [启动] GridPilot 模拟盘：http://127.0.0.1:15000/paper
+start "" /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:15000/paper"
 node src/server.js
 pause

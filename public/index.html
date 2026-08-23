@@ -4,7 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
   <title>GridPilot</title>
+  <script>
+    (() => {
+      const leaf = location.pathname.replace(/\/+$/, '').split('/').pop()?.replace(/\.html$/i, '').toLowerCase();
+      const pathMode = leaf === 'paper' || leaf === 'live' ? leaf : null;
+      const queryModeValue = new URLSearchParams(location.search).get('console')?.toLowerCase();
+      const queryMode = queryModeValue === 'paper' || queryModeValue === 'live' ? queryModeValue : null;
+      const explicit = Boolean(pathMode || queryMode);
+      document.documentElement.dataset.consoleMode = pathMode || queryMode || 'paper';
+      document.documentElement.dataset.consoleModeExplicit = String(explicit);
+      document.documentElement.dataset.consoleModeCleanRoute = String(Boolean(pathMode));
+    })();
+  </script>
   <style>
     :root {
       --ink: #18201f;
@@ -39,11 +52,11 @@
     .runtime-status { display: flex; align-items: center; gap: 7px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
     .runtime-node { min-height: 28px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 800; white-space: nowrap; }
     .runtime-node::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #8b9491; vertical-align: 0; }
-    .runtime-node.ok { color: var(--green); background: var(--green-soft); border-color: #1b6948; }
+    .runtime-node.ok { color: var(--green); background: var(--green-soft); border-color: #b8ddcf; }
     .runtime-node.ok::before { background: var(--green); box-shadow: 0 0 8px rgba(53,208,127,.7); }
-    .runtime-node.warn { color: var(--amber); background: #302613; border-color: #6f5528; }
+    .runtime-node.warn { color: var(--amber); background: #fff5e2; border-color: #e6c78e; }
     .runtime-node.warn::before { background: var(--amber); }
-    .runtime-node.error { color: var(--coral); background: var(--coral-soft); border-color: #703542; }
+    .runtime-node.error { color: var(--coral); background: var(--coral-soft); border-color: #efc8bf; }
     .runtime-node.error::before { background: var(--coral); }
     .runtime-clock { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .pill { min-height: 28px; padding: 5px 9px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 11px; font-weight: 750; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -55,12 +68,23 @@
     .pill.connected::before { background: var(--green); }
     .icon-btn { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 7px; background: var(--white); color: var(--ink); display: grid; place-items: center; font-size: 18px; }
     .icon-btn:hover { border-color: #aeb8b4; background: var(--soft); }
-    .live-banner { display: none; background: var(--coral); color: white; text-align: center; padding: 8px 16px; font-size: 12px; font-weight: 800; }
-    .live-banner.show { display: block; }
+    .mode-banner { border-bottom: 1px solid #b8ddcf; background: var(--green-soft); color: var(--green); }
+    .mode-banner-inner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 11px; }
+    .mode-banner strong { font-size: 11px; }
+    .mode-banner span { color: var(--muted); }
+    .mode-switch { display: grid; grid-template-columns: repeat(2, 82px); flex: 0 0 auto; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+    .mode-switch a { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 5px; color: var(--muted); font-size: 11px; font-weight: 800; text-decoration: none; }
+    .mode-switch a::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8b9491; }
+    html[data-console-mode="paper"] #paper-page-link,
+    html[data-console-mode="live"] #live-page-link { background: var(--white); color: var(--ink); box-shadow: 0 1px 4px rgba(24,32,31,.12); }
+    html[data-console-mode="paper"] #paper-page-link::before { background: var(--green); }
+    html[data-console-mode="live"] #live-page-link::before { background: var(--coral); }
+    html[data-console-mode="paper"] .live-page-only,
+    html[data-console-mode="live"] .paper-page-only { display: none !important; }
     main { padding: 28px 0 42px; }
     .market-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 20px; margin-bottom: 22px; }
     .eyebrow { margin: 0 0 6px; color: var(--green); font-weight: 800; font-size: 11px; text-transform: uppercase; }
-    h1 { margin: 0; font-size: clamp(28px, 3vw, 44px); line-height: 1; font-weight: 850; }
+    h1 { margin: 0; font-size: 38px; line-height: 1; font-weight: 850; }
     .price-line { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
     .last-price { font-size: 21px; font-variant-numeric: tabular-nums; font-weight: 750; }
     .health { font-size: 12px; color: var(--muted); }
@@ -117,6 +141,11 @@
     .rescue-copy strong { display: block; color: var(--coral); font-size: 13px; margin-bottom: 5px; }
     .rescue-copy span { color: var(--muted); font-size: 11px; }
     .rescue-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .mode-guard { margin: 0 0 18px; padding: 12px 16px; border-top: 1px solid #e5b58d; border-bottom: 1px solid #e5b58d; background: #fff5e9; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 14px; }
+    .mode-guard[hidden] { display: none; }
+    .mode-guard strong { display: block; color: #925018; font-size: 12px; }
+    .mode-guard span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .static-value { min-height: 42px; display: flex; align-items: center; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: var(--ink); font-size: 12px; font-weight: 800; }
     .check-list { margin-top: 16px; border-top: 1px solid var(--line); }
     .check-row { display: grid; grid-template-columns: 22px 130px minmax(0,1fr); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 11px; align-items: start; }
     .check-icon { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); color: var(--muted); font-weight: 800; }
@@ -216,15 +245,20 @@
     @media (max-width: 1100px) {
       .metrics { grid-template-columns: repeat(3,1fr); }
       .workspace { grid-template-columns: 1fr; }
+      .runtime-status { display: none; }
       .monitor-metrics { grid-template-columns: repeat(3,minmax(0,1fr)); }
       .monitor-metric:nth-child(3) { border-right: 0; }
       .monitor-metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
     }
     @media (max-width: 680px) {
       .shell { width: min(100% - 24px, 1480px); }
-      .topbar-inner { min-height: 62px; }
+      .topbar-inner { min-height: 62px; padding: 8px 0; flex-wrap: wrap; gap: 8px; }
       .brand { min-width: 0; }
-      .brand small, #connection-pill, #network-pill { display: none; }
+      .mode-switch { order: 3; width: 100%; grid-template-columns: repeat(2, 1fr); }
+      .brand small, #mode-pill, #ai-pill, #connection-pill, #network-pill { display: none; }
+      .top-meta { gap: 6px; }
+      .mode-banner-inner { min-height: 42px; padding: 6px 0; flex-wrap: wrap; gap: 3px 8px; text-align: center; }
+      h1 { font-size: 30px; }
       main { padding-top: 20px; }
       .market-head { grid-template-columns: 1fr; align-items: start; }
       .market-picker select { min-width: 0; }
@@ -239,6 +273,7 @@
       .trend-cell:nth-child(2) { border-right: 0; }
       .trend-cell:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
       .secondary-actions { grid-template-columns: 1fr; }
+      .mode-guard { grid-template-columns: 1fr; }
       .safety-body, .rescue-body { grid-template-columns: 1fr; display: grid; }
       .safety-actions, .rescue-actions { justify-content: stretch; }
       .safety-actions .btn, .rescue-actions .btn { flex: 1; }
@@ -268,101 +303,108 @@
       .settings-actions .btn { flex: 1; }
     }
 
-    /* Dark control-tower presentation: the trading logic remains unchanged. */
+  </style>
+  <style id="live-theme" media="not all">
+    /* Live control tower: intentionally distinct from the paper workspace. */
     :root {
       color-scheme: dark;
-      --ink: #e8eef7;
-      --muted: #8b9ab0;
-      --line: #263449;
-      --soft: #111c2e;
-      --paper: #060b14;
-      --white: #0d1625;
-      --green: #35d07f;
-      --green-soft: #103526;
-      --coral: #ff6b6b;
-      --coral-soft: #3a1d25;
-      --cyan: #46b8e8;
-      --amber: #f3b95f;
+      --ink: #f2f0eb;
+      --muted: #a5a39f;
+      --line: #373a40;
+      --soft: #202329;
+      --paper: #0c0d0f;
+      --white: #15171a;
+      --green: #58c88c;
+      --green-soft: #173426;
+      --coral: #ff6a63;
+      --coral-soft: #3b1d1c;
+      --cyan: #67b6c8;
+      --amber: #f0bb58;
       --shadow: 0 14px 40px rgba(0, 0, 0, .24);
     }
     body { background: var(--paper); color: var(--ink); }
     .shell { width: min(1540px, calc(100% - 44px)); }
-    .topbar { background: rgba(6, 11, 20, .9); border-bottom-color: var(--line); }
+    .topbar { background: rgba(12, 13, 15, .92); border-bottom-color: var(--line); }
     .topbar-inner { min-height: 64px; }
-    .brand-mark { border-radius: 6px; background: #f8fafc; color: #07101e; box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
-    .brand strong { color: var(--ink); letter-spacing: .01em; }
+    .brand-mark { border-radius: 6px; background: #f1eee8; color: #141414; box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
+    .brand strong { color: var(--ink); letter-spacing: 0; }
     .brand small { color: var(--muted); }
     .top-meta { gap: 7px; }
-    .pill { background: #111b2c; border-color: var(--line); color: var(--muted); }
-    .pill.live { background: var(--coral-soft); color: var(--coral); border-color: #703542; }
-    .pill.paper { background: var(--green-soft); color: var(--green); border-color: #1b6948; }
-    .icon-btn { border-color: var(--line); background: #101a2b; color: var(--ink); }
-    .icon-btn:hover { border-color: #44607d; background: #16243a; }
-    .live-banner { background: #b83848; }
+    .pill { background: #1c1f24; border-color: var(--line); color: var(--muted); }
+    .pill.live { background: var(--coral-soft); color: var(--coral); border-color: #73403e; }
+    .pill.paper { background: var(--green-soft); color: var(--green); border-color: #35664a; }
+    .icon-btn { border-color: var(--line); background: #191c20; color: var(--ink); }
+    .icon-btn:hover { border-color: #696d75; background: #23272d; }
+    .mode-banner { border-bottom-color: #9a3935; background: #b23b36; color: white; }
+    .mode-banner span { color: #ffe4e1; }
+    .mode-switch { background: #1b1e22; }
+    .mode-switch a.active, #live-page-link { box-shadow: none; }
     main { padding: 26px 0 52px; }
     .subnav { display: flex; align-items: center; gap: 6px; min-height: 40px; border-bottom: 1px solid var(--line); }
     .subnav a { color: var(--muted); text-decoration: none; font-size: 11px; font-weight: 800; padding: 10px 13px; border-bottom: 2px solid transparent; }
-    .subnav a:hover, .subnav a:focus-visible, .subnav a.active { color: var(--ink); border-bottom-color: var(--green); outline: none; }
+    .subnav a:hover, .subnav a:focus-visible, .subnav a.active { color: var(--ink); border-bottom-color: var(--coral); outline: none; }
     .section-heading { display: flex; align-items: end; gap: 12px; margin: 18px 0 14px; }
-    .section-heading h2 { margin: 0; font-size: 14px; letter-spacing: .02em; }
+    .section-heading h2 { margin: 0; font-size: 14px; letter-spacing: 0; }
     .section-heading p { margin: 0; color: var(--muted); font-size: 11px; }
     .market-head { margin-bottom: 14px; }
-    .eyebrow { color: var(--green); letter-spacing: .09em; }
-    h1 { font-size: clamp(24px, 3vw, 38px); }
+    .eyebrow { color: var(--coral); letter-spacing: 0; }
+    h1 { font-size: 34px; }
     .last-price { color: var(--ink); font-size: 22px; }
     .health { color: var(--muted); }
     .market-picker label { color: var(--muted); }
-    select, input { border-color: var(--line); background: #0b1423; color: var(--ink); }
-    select:focus, input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(53,208,127,.14); }
+    select, input { border-color: var(--line); background: #111316; color: var(--ink); }
+    select:focus, input:focus { border-color: var(--coral); box-shadow: 0 0 0 3px rgba(255,106,99,.16); }
     .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
-    .metric { background: linear-gradient(180deg, #101b2c 0%, #0d1625 100%); border-color: var(--line); border-radius: 6px; min-height: 94px; padding: 13px 14px; box-shadow: none; }
+    .metric { background: #16191d; border-color: var(--line); border-radius: 6px; min-height: 94px; padding: 13px 14px; box-shadow: none; }
     .metric span, .metric small { color: var(--muted); }
     .metric strong { color: var(--ink); margin-top: 8px; font-size: 20px; }
-    .panel { background: #0d1625; border-color: var(--line); border-radius: 6px; box-shadow: var(--shadow); }
+    .panel { background: #15171a; border-color: var(--line); border-radius: 6px; box-shadow: var(--shadow); }
     .panel-head { min-height: 52px; padding: 0 16px; border-bottom-color: var(--line); }
     .panel-head h2 { color: var(--ink); font-size: 13px; }
     .panel-body { padding: 16px; }
-    .safety-panel { margin-bottom: 14px; background: #0c1726; }
+    .safety-panel { margin-bottom: 14px; background: #191718; border-color: #5b3432; }
     .safety-body { padding: 12px 16px; }
     .safety-stat span, .field label, .settings-summary span, .monitor-metric span { color: var(--muted); }
     .safety-policy, .check-list, .settings-summary { border-color: var(--line); }
-    .rescue-panel { margin-bottom: 14px; background: #251523; border-color: #6e3542; }
+    .rescue-panel { margin-bottom: 14px; background: #281817; border-color: #743d3a; }
+    .mode-guard { border-color: #a8443f; background: #321b1a; }
+    .mode-guard strong { color: #ff918b; }
     .check-row, .settings-summary div, .monitor-metric, .monitor-grid, .trend-cell, .log-item, .monitor-section-head { border-color: var(--line); }
     .workspace { grid-template-columns: minmax(0, 1.7fr) minmax(360px, .9fr); gap: 14px; }
-    .workspace > article.panel, .workspace > aside.panel { background: #0b1422; }
-    .chart-wrap { min-height: 360px; background: #091321; }
+    .workspace > article.panel, .workspace > aside.panel { background: #131518; }
+    .chart-wrap { min-height: 360px; background: #101215; }
     #price-chart { cursor: crosshair; }
     .chart-empty { color: var(--muted); }
-    .chart-interval, .chart-mode, .segmented { background: #0a1321; border-color: var(--line); }
+    .chart-interval, .chart-mode, .segmented { background: #111316; border-color: var(--line); }
     .chart-interval button, .chart-mode button, .segmented button { color: var(--muted); }
-    .chart-interval button.active, .chart-mode button.active, .segmented button.active { background: #1a2940; color: var(--ink); box-shadow: inset 0 0 0 1px #38516e; }
-    .trend-strip { background: #0d1727; border-top-color: var(--line); }
+    .chart-interval button.active, .chart-mode button.active, .segmented button.active { background: #292c31; color: var(--ink); box-shadow: inset 0 0 0 1px #555960; }
+    .trend-strip { background: #17191c; border-top-color: var(--line); }
     .trend-cell strong { color: var(--ink); }
     .trend-detail { color: var(--muted); }
-    .btn { border-color: var(--line); background: #111d30; color: var(--ink); }
-    .btn:hover { border-color: #46617e; background: #17263d; }
-    .btn.primary { background: var(--green); border-color: var(--green); color: #07100d; }
-    .btn.primary:hover { background: #55df93; }
-    .btn.danger { color: var(--coral); border-color: #713746; background: #2a1821; }
-    .status-box { background: #101c2e; color: var(--muted); border: 1px solid var(--line); }
+    .btn { border-color: var(--line); background: #202329; color: var(--ink); }
+    .btn:hover { border-color: #6a6e75; background: #292d33; }
+    .btn.primary { background: var(--coral); border-color: var(--coral); color: #1d0908; }
+    .btn.primary:hover { background: #ff8580; }
+    .btn.danger { color: #fff; border-color: #a8443f; background: #8f302c; }
+    .status-box { background: #1b1e23; color: var(--muted); border: 1px solid var(--line); }
     .trade-monitor { margin-top: 14px; }
     .monitor-body { min-height: 300px; }
     .grid-visual, .log-list { height: 252px; }
-    .rung { background: #293950; }
+    .rung { background: #444850; }
     .price-pointer { color: var(--muted); }
     .log-kind.order { color: var(--cyan); }
     .log-kind.fill { color: var(--green); }
     .log-kind.cancel, .log-kind.warning { color: var(--coral); }
     .empty-row { color: var(--muted); }
-    .settings-panel { margin-top: 14px; margin-bottom: 0; background: #0b1422; }
-    .settings-toggle:hover { background: #111d30; }
+    .settings-panel { margin-top: 14px; margin-bottom: 0; background: #131518; }
+    .settings-toggle:hover { background: #202329; }
     .settings-chevron { color: var(--muted); }
-    .modal-backdrop { background: rgba(1, 5, 12, .72); }
-    .modal { background: #0d1625; border: 1px solid var(--line); }
+    .modal-backdrop { background: rgba(0, 0, 0, .76); }
+    .modal { background: #15171a; border: 1px solid var(--line); }
     .modal-grid { border-color: var(--line); }
     .modal-grid span { border-color: var(--line); }
-    .modal-grid span:nth-child(odd) { background: #111d30; }
-    .toast { background: #16243a; border: 1px solid #304866; }
+    .modal-grid span:nth-child(odd) { background: #202329; }
+    .toast { background: #292d33; border: 1px solid #4d5158; }
     .toast.error { background: #672d3b; border-color: #8a4354; }
     @media (max-width: 1100px) {
       .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -380,9 +422,14 @@
       .chart-wrap { min-height: 280px; }
     }
   </style>
+  <script>
+    document.getElementById('live-theme').media = document.documentElement.dataset.consoleMode === 'live' ? 'all' : 'not all';
+  </script>
 </head>
 <body>
-  <div id="live-banner" class="live-banner">实盘已解锁 · 所有订单会发送到 Decibel 主网</div>
+  <div id="mode-banner" class="mode-banner">
+    <div class="shell mode-banner-inner"><strong id="mode-banner-title">模拟盘工作台</strong><span id="mode-banner-detail">订单仅在本地撮合，不会发送到交易所</span></div>
+  </div>
   <header class="topbar">
     <div class="shell topbar-inner">
       <div class="brand">
@@ -395,6 +442,10 @@
         <span id="runtime-risk" class="runtime-node">风控: --</span>
         <span id="runtime-clock" class="runtime-clock">--:--:--</span>
       </div>
+      <nav class="mode-switch" aria-label="交易模式页面">
+        <a id="paper-page-link" href="/paper">模拟盘</a>
+        <a id="live-page-link" href="/live">实盘</a>
+      </nav>
       <div class="top-meta">
         <span id="mode-pill" class="pill paper">PAPER</span>
         <span id="network-pill" class="pill">MAINNET</span>
@@ -414,6 +465,10 @@
   </nav>
 
   <main class="shell">
+    <section id="mode-guard" class="mode-guard" hidden>
+      <div><strong id="mode-guard-title">页面与服务模式不一致</strong><span id="mode-guard-detail">交易操作已锁定。</span></div>
+      <a id="runtime-mode-link" class="btn small" href="/paper">打开当前运行页面</a>
+    </section>
     <div id="overview" class="section-heading">
       <h2>账户总览</h2>
       <p>单交易所 · 实时行情、权益与执行状态</p>
@@ -445,7 +500,7 @@
     </div>
 
     <section id="risk-panel" class="panel safety-panel">
-      <header class="panel-head"><h2>实盘安全</h2><span id="preflight-badge" class="pill push">未预检</span></header>
+      <header class="panel-head"><h2 id="safety-title">模拟盘风控</h2><span id="preflight-badge" class="pill push live-page-only">未预检</span></header>
       <div class="safety-body">
         <div class="safety-stats">
           <div class="safety-stat"><span>日内亏损</span><strong id="risk-daily-loss">--</strong></div>
@@ -453,10 +508,10 @@
           <div class="safety-stat"><span>通知</span><strong id="notify-state">--</strong></div>
         </div>
         <div class="safety-actions">
-          <button id="preflight-btn" class="btn">实盘预检</button>
-          <button id="risk-reset-btn" class="btn">重置风险</button>
+          <button id="preflight-btn" class="btn live-page-only">实盘预检</button>
+          <button id="risk-reset-btn" class="btn" data-runtime-action>重置风险</button>
           <button id="risk-policy-btn" class="btn">调整上限</button>
-          <button id="emergency-btn" class="btn danger">紧急停止</button>
+          <button id="emergency-btn" class="btn danger" data-runtime-action>紧急停止</button>
         </div>
         <div id="risk-policy-form" class="safety-policy" hidden>
           <label>杠杆上限 (倍)<input id="policy-max-leverage" type="number" min="1" max="50" step="1"></label>
@@ -466,7 +521,7 @@
           <label>维持保证金率下限 (%)<input id="policy-maintenance-ratio" type="number" min="100" step="10"></label>
           <label>日内亏损上限 (USDC)<input id="policy-daily-loss" type="number" min="1" step="1"></label>
           <label>权益回撤上限 (%)<input id="policy-drawdown" type="number" min="0.1" max="100" step="0.1"></label>
-          <button id="risk-policy-save" class="btn">保存上限</button>
+          <button id="risk-policy-save" class="btn" data-runtime-action>保存上限</button>
         </div>
       </div>
     </section>
@@ -475,9 +530,9 @@
       <div class="rescue-body">
         <div class="rescue-copy"><strong>检测到未托管持仓</strong><span id="rescue-detail">--</span></div>
         <div class="rescue-actions">
-          <button id="recovery-btn" class="btn">只减仓回收</button>
-          <button id="regrid-btn" class="btn">按当前参数重开</button>
-          <button id="orphan-close-btn" class="btn danger">市价平仓</button>
+          <button id="recovery-btn" class="btn" data-runtime-action>只减仓回收</button>
+          <button id="regrid-btn" class="btn" data-runtime-action>按当前参数重开</button>
+          <button id="orphan-close-btn" class="btn danger" data-runtime-action>市价平仓</button>
         </div>
       </div>
     </section>
@@ -535,15 +590,15 @@
             <button id="smart-btn" class="btn">自动参数</button>
             <button id="conservative-btn" class="btn">波动率自适应</button>
           </div>
-          <div id="paper-readiness" class="readiness-panel" aria-live="polite">
+          <div id="paper-readiness" class="readiness-panel paper-page-only" aria-live="polite">
             <div class="readiness-head"><strong>模拟盘就绪检查</strong><span id="paper-readiness-badge" class="pill push">检查中</span></div>
             <div id="paper-readiness-list" class="readiness-list"><span>正在读取状态...</span></div>
           </div>
-          <button id="start-btn" class="btn primary action-main">启动网格</button>
+          <button id="start-btn" class="btn primary action-main" data-runtime-action>启动模拟网格</button>
           <div class="secondary-actions">
-            <button id="adjust-btn" class="btn">调整区间</button>
-            <button id="cancel-btn" class="btn">撤销挂单</button>
-            <button id="stop-btn" class="btn danger">停止并平仓</button>
+            <button id="adjust-btn" class="btn" data-runtime-action>调整区间</button>
+            <button id="cancel-btn" class="btn" data-runtime-action>撤销挂单</button>
+            <button id="stop-btn" class="btn danger" data-runtime-action>停止并平仓</button>
           </div>
           <div id="action-status" class="status-box">模拟盘已就绪</div>
         </div>
@@ -551,7 +606,7 @@
     </section>
 
     <section class="panel trade-monitor">
-      <header class="panel-head"><h2>交易监控</h2><button id="reset-btn" class="btn small push">重置统计</button></header>
+      <header class="panel-head"><h2>交易监控</h2><button id="reset-btn" class="btn small push" data-runtime-action>重置统计</button></header>
       <div class="monitor-metrics">
         <div class="monitor-metric"><span>仓位数量</span><strong id="position-size">--</strong></div>
         <div class="monitor-metric"><span>持仓均价</span><strong id="position-entry">--</strong></div>
@@ -582,10 +637,11 @@
       <div id="connection-settings-body" class="settings-body">
         <div class="settings-grid connection-grid">
           <div class="field connection-span-3"><label for="connection-api-key">Geomi API Key <small id="connection-api-state">未配置</small></label><input id="connection-api-key" type="password" autocomplete="new-password" placeholder="输入新值，留空保持现有设置"></div>
-          <div class="field connection-span-3"><label for="connection-private-key">API 钱包私钥 <small id="connection-private-state">未配置</small></label><input id="connection-private-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
-          <div class="field connection-span-2"><label for="connection-subaccount">Trading Account <small id="connection-account-state">未配置</small></label><input id="connection-subaccount" type="password" autocomplete="off" placeholder="0x..."></div>
+          <div class="field connection-span-3 live-page-only"><label for="connection-private-key">API 钱包私钥 <small id="connection-private-state">未配置</small></label><input id="connection-private-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
+          <div class="field connection-span-2 live-page-only"><label for="connection-subaccount">Trading Account <small id="connection-account-state">未配置</small></label><input id="connection-subaccount" type="password" autocomplete="off" placeholder="0x..."></div>
           <div class="field connection-span-2"><label for="connection-network">目标网络</label><select id="connection-network"><option value="mainnet">Mainnet</option><option value="testnet">Testnet</option></select></div>
-          <div class="field connection-span-2"><label for="connection-mode">重启后模式</label><select id="connection-mode"><option value="paper">模拟盘</option><option value="live">实盘</option></select></div>
+          <input id="connection-mode" type="hidden" value="paper">
+          <div class="field connection-span-2"><label>配置用途</label><div id="connection-page-mode" class="static-value">模拟盘</div></div>
           <div class="field connection-span-3"><label for="connection-proxy">网络代理 <small id="connection-proxy-state">未配置</small></label><input id="connection-proxy" type="password" autocomplete="off" placeholder="http://host:port 或 socks5://user:pass@host:port"></div>
         </div>
         <div class="settings-summary">
@@ -596,7 +652,7 @@
         </div>
         <div class="settings-actions">
           <button id="connection-save-btn" class="btn primary">保存连接设置</button>
-          <button id="connection-restart-btn" class="btn">重启模拟盘</button>
+          <button id="connection-restart-btn" class="btn paper-page-only">重启模拟盘</button>
           <button id="proxy-check-btn" class="btn">检测出口 IP</button>
         </div>
       </div>
@@ -702,7 +758,37 @@
     if (queryToken) sessionStorage.setItem('gridpilot-token', queryToken);
     const token = sessionStorage.getItem('gridpilot-token') || '';
     const basePath = location.pathname === '/deepBTC' || location.pathname.startsWith('/deepBTC/') ? '/deepBTC' : '';
+    const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
+    let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
+    let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
     const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
+
+    function consolePageUrl(mode) {
+      const url = new URL(location.href);
+      if (dashboardRoutesAvailable) {
+        url.pathname = `${basePath}/${mode}`;
+        url.searchParams.delete('console');
+      } else {
+        url.pathname = basePath ? `${basePath}/` : '/';
+        url.searchParams.set('console', mode);
+      }
+      url.hash = '';
+      return url.pathname + url.search;
+    }
+
+    function setConsoleMode(mode, replaceUrl = false) {
+      consoleMode = mode === 'live' ? 'live' : 'paper';
+      document.documentElement.dataset.consoleMode = consoleMode;
+      document.querySelector('meta[name="color-scheme"]').content = consoleMode === 'live' ? 'dark' : 'light';
+      $('live-theme').media = consoleMode === 'live' ? 'all' : 'not all';
+      $('paper-page-link').href = consolePageUrl('paper');
+      $('live-page-link').href = consolePageUrl('live');
+      $('paper-page-link').setAttribute('aria-current', consoleMode === 'paper' ? 'page' : 'false');
+      $('live-page-link').setAttribute('aria-current', consoleMode === 'live' ? 'page' : 'false');
+      $('connection-mode').value = consoleMode;
+      $('connection-page-mode').textContent = consoleMode === 'live' ? '实盘' : '模拟盘';
+      if (replaceUrl) history.replaceState(null, '', consolePageUrl(consoleMode) + location.hash);
+    }
 
     function apiUrl(path) {
       const url = new URL(basePath + path, location.origin);
@@ -721,6 +807,7 @@
     }
 
     async function init() {
+      setConsoleMode(consoleMode);
       bindEvents();
       updateRuntimeClock();
       window.setInterval(updateRuntimeClock, 1000);
@@ -742,6 +829,9 @@
           request('/api/ai-config'),
         ]);
         state.app = app;
+        dashboardRoutesAvailable = Array.isArray(app.dashboardPages) && app.dashboardPages.includes('paper') && app.dashboardPages.includes('live');
+        if (!explicitConsoleMode) setConsoleMode(app.mode, dashboardRoutesAvailable);
+        else setConsoleMode(consoleMode);
         state.connection = connection;
         state.notification = notification;
         state.ai = ai;
@@ -751,9 +841,9 @@
         renderAiSettings(ai);
         await loadMarkets();
         await loadTrend();
-        state.bot = await request('/api/state');
+        state.bot = await request(`/api/state?console=${consoleMode}`);
         renderState(state.bot);
-        await loadPaperReadiness();
+        if (consoleMode === 'paper') await loadPaperReadiness();
       } catch (error) {
         showToast(error.message, true);
         $('action-status').textContent = error.message;
@@ -782,8 +872,10 @@
       ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
         $(id).addEventListener('input', () => {
           state.formDirty = true; state.chartManualRange = null; drawChart();
-          window.clearTimeout(state.readinessTimer);
-          state.readinessTimer = window.setTimeout(() => loadPaperReadiness(formBody()), 350);
+          if (consoleMode === 'paper') {
+            window.clearTimeout(state.readinessTimer);
+            state.readinessTimer = window.setTimeout(() => loadPaperReadiness(formBody()), 350);
+          }
         });
       });
       $('chart-mode').addEventListener('click', (event) => {
@@ -860,9 +952,11 @@
     }
 
     function renderApp() {
-      document.title = state.app.name;
+      const pageLabel = consoleMode === 'live' ? '实盘交易台' : '模拟盘工作台';
+      const runtimeMatches = state.app.mode === consoleMode;
+      document.title = `${pageLabel} | ${state.app.name}`;
       $('brand-name').textContent = state.app.name;
-      $('owner-name').textContent = `${state.app.owner} · Decibel`;
+      $('owner-name').textContent = `${state.app.owner} · ${pageLabel}`;
       $('mode-pill').textContent = state.app.mode.toUpperCase();
       $('mode-pill').className = `pill ${state.app.mode}`;
       setRuntimeNode($('runtime-exchange'), `DE: ${state.app.mode.toUpperCase()}`, state.app.mode === 'live' ? 'error' : 'warn');
@@ -874,7 +968,14 @@
       const ai = state.app.ai || {};
       $('ai-pill').textContent = ai.configured ? `AI ${ai.provider.toUpperCase()}` : 'AI 未配置';
       $('ai-pill').className = `pill ${ai.configured ? 'connected' : ''}`;
-      $('live-banner').classList.toggle('show', state.app.mode === 'live');
+      $('mode-banner-title').textContent = consoleMode === 'live' ? '实盘交易台 · LIVE' : '模拟盘工作台 · PAPER';
+      $('mode-banner-detail').textContent = consoleMode === 'live'
+        ? (runtimeMatches ? '真实订单会发送到 Decibel，请逐项核对后操作' : '服务尚未切换到实盘，当前页面仅供配置与查看')
+        : (runtimeMatches ? '订单仅在本地撮合，不会发送到交易所' : '服务当前处于实盘，模拟盘页面的交易操作已锁定');
+      $('safety-title').textContent = consoleMode === 'live' ? '实盘安全与预检' : '模拟盘风控';
+      $('start-btn').textContent = consoleMode === 'live' ? '启动实盘网格' : '启动模拟网格';
+      $('connection-page-mode').textContent = consoleMode === 'live' ? '实盘' : '模拟盘';
+      $('connection-mode').value = consoleMode;
       $('about-network').textContent = `${state.app.network} / ${state.app.mode}`;
       $('about-resume').textContent = state.app.autoResume ? '开启' : '关闭';
       $('about-version').textContent = state.app.version;
@@ -887,7 +988,27 @@
       $('policy-drawdown').value = state.app.riskPolicy.maxDrawdownPct;
       $('notify-state').textContent = state.app.notificationsEnabled ? '已配置' : '未配置';
       $('notify-test-btn').disabled = !state.app.notificationsEnabled;
-      $('action-status').textContent = state.app.mode === 'live' ? '实盘已解锁，请逐项核对参数' : '模拟盘已就绪，不会发送真实订单';
+      $('action-status').textContent = runtimeMatches
+        ? (state.app.mode === 'live' ? '实盘已解锁，请逐项核对参数' : '模拟盘已就绪，不会发送真实订单')
+        : '页面与服务模式不一致，交易操作已锁定';
+      renderModeGuard();
+    }
+
+    function renderModeGuard() {
+      if (!state.app) return;
+      const runtimeMode = state.app.mode === 'live' ? 'live' : 'paper';
+      const runtimeMatches = runtimeMode === consoleMode;
+      $('mode-guard').hidden = runtimeMatches;
+      $('runtime-mode-link').href = consolePageUrl(runtimeMode);
+      if (!runtimeMatches) {
+        const pageLabel = consoleMode === 'live' ? '实盘页面' : '模拟盘页面';
+        const runtimeLabel = runtimeMode === 'live' ? 'LIVE 实盘' : 'PAPER 模拟盘';
+        $('mode-guard-title').textContent = `${pageLabel}当前为只读`;
+        $('mode-guard-detail').textContent = `服务实际运行在 ${runtimeLabel}，为防止模式混淆，当前页面已禁用所有交易动作。`;
+        $('runtime-mode-link').textContent = `打开${runtimeMode === 'live' ? '实盘' : '模拟盘'}页面`;
+        $('action-status').textContent = `只读：服务实际运行在 ${runtimeLabel}`;
+      }
+      renderActionAvailability(state.bot);
     }
 
     function setRuntimeNode(node, text, tone = '') {
@@ -901,7 +1022,8 @@
       if (!settings) return;
       state.connection = { settings, restartRequired: !!result?.restartRequired };
       $('connection-network').value = settings.targetNetwork || 'mainnet';
-      $('connection-mode').value = settings.targetMode || 'paper';
+      $('connection-mode').value = consoleMode;
+      $('connection-page-mode').textContent = consoleMode === 'live' ? '实盘' : '模拟盘';
       $('connection-api-state').textContent = settings.hasApiKey ? settings.apiKeyMask : '未配置';
       $('connection-private-state').textContent = settings.hasPrivateKey ? settings.privateKeyMask : '未配置';
       $('connection-account-state').textContent = settings.hasSubaccount ? settings.subaccountMask : '未配置';
@@ -1079,7 +1201,7 @@
     }
 
     async function saveConnectionSettings() {
-      const targetMode = $('connection-mode').value;
+      const targetMode = consoleMode;
       const body = {
         apiKey: $('connection-api-key').value.trim(),
         privateKey: $('connection-private-key').value.trim(),
@@ -1102,7 +1224,9 @@
         $('connection-proxy').value = '';
         renderConnectionSettings(result);
         if (result.settings.hasApiKey && result.settings.hasPrivateKey && result.settings.hasSubaccount) setSettingsCollapsed('connection', true);
-        showToast('连接设置已保存，点击“重启模拟盘”后生效');
+        showToast(targetMode === 'live'
+          ? '实盘连接设置已保存，请使用实盘启动脚本重启服务'
+          : '模拟盘连接设置已保存，可重启模拟盘使其生效');
       } catch (error) { showToast(error.message, true); }
       finally { setBusyButton($('connection-save-btn'), false, '保存连接设置'); }
     }
@@ -1155,7 +1279,14 @@
     }
 
     function renderDailySummary(summary, settings = state.notification?.settings) {
-      if (!summary) return;
+      if (!summary) {
+        $('daily-baseline').textContent = '--';
+        $('daily-current').textContent = '--';
+        $('daily-pnl').textContent = '--';
+        $('daily-pnl').classList.remove('positive', 'negative');
+        $('daily-schedule').textContent = settings ? `${settings.dailyTime} · ${settings.timezone}` : '--';
+        return;
+      }
       $('daily-baseline').textContent = summary.baselineEquity == null ? '--' : `${money(summary.baselineEquity)} USDC`;
       $('daily-current').textContent = summary.currentEquity == null ? '--' : `${money(summary.currentEquity)} USDC`;
       const pnl = Number(summary.pnl);
@@ -1319,6 +1450,7 @@
     }
 
     async function runPreflight() {
+      if (!runtimeMatchesConsole()) return showToast('服务尚未运行在实盘模式，请先保存实盘连接并使用实盘脚本重启。', true);
       setBusyButton($('preflight-btn'), true, '检查中');
       $('preflight-modal').classList.add('show');
       $('preflight-summary').textContent = '正在检查 Decibel 连接与账户状态...';
@@ -1472,6 +1604,11 @@
 
     async function action(path, body) {
       if (state.busy) return;
+      const runtimePaths = new Set(['/api/start', '/api/stop', '/api/adjust', '/api/reset', '/api/cancel-orders', '/api/close-position', '/api/start-recovery', '/api/emergency-stop']);
+      if (runtimePaths.has(path) && !runtimeMatchesConsole()) {
+        showToast('页面与服务模式不一致，交易操作已锁定。', true);
+        return;
+      }
       state.busy = true;
       setActionsDisabled(true);
       try {
@@ -1489,7 +1626,7 @@
     }
 
     function connectStream() {
-      const stream = new EventSource(apiUrl('/api/stream'));
+      const stream = new EventSource(apiUrl(`/api/stream?console=${consoleMode}`));
       stream.onopen = () => {
         $('connection-pill').textContent = '实时连接';
         $('connection-pill').classList.add('connected');
@@ -1518,8 +1655,9 @@
       };
     }
 
-    function renderState(bot) {
-      if (!bot) return;
+    function renderState(runtimeBot) {
+      if (!runtimeBot) return;
+      const bot = runtimeMatchesConsole() ? runtimeBot : inactiveConsoleState(runtimeBot);
       if (bot.paperReadiness) renderPaperReadiness(bot.paperReadiness);
       const price = Number(bot.lastPrice || state.market?.lastPrice);
       $('last-price').textContent = price > 0 ? `${money(price)} USDC` : '--';
@@ -1538,10 +1676,10 @@
       $('metric-orders').textContent = bot.openOrders ?? 0;
       $('metric-order-sync').textContent = `交易所 ${bot.exchangeOpenOrders ?? '--'}`;
       const healthTone = health.status === 'error' ? 'error' : health.status === 'warn' ? 'warn' : (bot.running ? 'ok' : 'warn');
-      setRuntimeNode($('runtime-exchange'), `DE: ${bot.running ? '运行中' : '待机'}`, healthTone);
+      setRuntimeNode($('runtime-exchange'), bot.runtimeAvailable === false ? `DE: ${consoleMode === 'live' ? '实盘未启动' : '模拟盘未启动'}` : `DE: ${bot.running ? '运行中' : '待机'}`, healthTone);
       const riskHalted = !!bot.liveRisk?.halted;
-      setRuntimeNode($('runtime-risk'), riskHalted ? '风控: 已锁定' : (state.app?.mode === 'live' ? '风控: 正常' : '风控: PAPER'), riskHalted ? 'error' : (state.app?.mode === 'live' ? 'ok' : 'ok'));
-      $('run-state').textContent = bot.running ? (bot.recovery ? '回收中' : '运行中') : '未运行';
+      setRuntimeNode($('runtime-risk'), bot.runtimeAvailable === false ? '风控: 未启动' : (riskHalted ? '风控: 已锁定' : (state.app?.mode === 'live' ? '风控: 正常' : '风控: PAPER')), riskHalted ? 'error' : 'ok');
+      $('run-state').textContent = bot.runtimeAvailable === false ? `${consoleMode === 'live' ? '实盘' : '模拟盘'}未启动` : (bot.running ? (bot.recovery ? '回收中' : '运行中') : '未运行');
       $('run-state').className = `pill push ${bot.running ? 'paper' : ''}`;
       $('range-state').textContent = bot.outOfRange ? '超出区间' : (bot.config ? '区间内' : '未配置');
       $('range-state').className = `pill push ${bot.outOfRange ? 'live' : (bot.config ? 'paper' : '')}`;
@@ -1563,11 +1701,6 @@
       } else if (!state.formDirty) {
         $('action-status').textContent = health.reason || '等待启动';
       }
-      $('start-btn').disabled = bot.running;
-      $('adjust-btn').disabled = !bot.running;
-      $('cancel-btn').disabled = !bot.config;
-      $('stop-btn').disabled = !bot.config;
-      $('risk-reset-btn').disabled = bot.running;
       $('rescue-panel').classList.toggle('show', !!bot.position && !bot.running);
       if (bot.position && !bot.running) {
         const side = bot.position.sizeBase > 0 ? '多头' : '空头';
@@ -1576,6 +1709,42 @@
       if (bot.config && !state.formDirty) syncForm(bot.config);
       renderLadder(bot);
       renderLogs(bot.activity || bot.alerts || []);
+      renderModeGuard();
+    }
+
+    function inactiveConsoleState(runtimeBot) {
+      const label = consoleMode === 'live' ? '实盘' : '模拟盘';
+      return {
+        ...runtimeBot,
+        mode: consoleMode,
+        runtimeMode: state.app?.mode || runtimeBot.mode,
+        runtimeAvailable: false,
+        recovery: false,
+        running: false,
+        config: null,
+        grid: null,
+        outOfRange: false,
+        risk: null,
+        stats: { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0 },
+        openOrders: 0,
+        exchangeOpenOrders: 0,
+        openByLevel: {},
+        health: { status: 'idle', reason: `${label}服务未启动`, dataSource: runtimeBot.health?.dataSource || null },
+        position: null,
+        realizedPnl: null,
+        unrealizedPnl: null,
+        totalPnl: null,
+        returnPct: null,
+        equity: null,
+        balance: null,
+        volume: null,
+        activity: [],
+        alerts: [],
+        liveRisk: null,
+        dailyPnl: null,
+        preflight: null,
+        paperReadiness: null,
+      };
     }
 
     function syncForm(config) {
@@ -1850,17 +2019,30 @@
     }
 
     function setActionsDisabled(disabled) {
-      ['start-btn','adjust-btn','cancel-btn','stop-btn','reset-btn','reconnect-btn'].forEach((id) => $(id).disabled = disabled);
+      if (disabled) document.querySelectorAll('[data-runtime-action]').forEach((button) => { button.disabled = true; });
+      else renderActionAvailability(state.bot);
+    }
+    function runtimeMatchesConsole() { return !state.app || state.app.mode === consoleMode; }
+    function renderActionAvailability(bot) {
+      const blocked = !runtimeMatchesConsole();
+      document.querySelectorAll('[data-runtime-action]').forEach((button) => { button.disabled = state.busy || blocked; });
+      $('preflight-btn').disabled = blocked;
+      if (!bot) return;
+      $('start-btn').disabled = state.busy || blocked || !!bot.running;
+      $('adjust-btn').disabled = state.busy || blocked || !bot.running;
+      $('cancel-btn').disabled = state.busy || blocked || !bot.config;
+      $('stop-btn').disabled = state.busy || blocked || !bot.config;
+      $('risk-reset-btn').disabled = state.busy || blocked || !!bot.running;
     }
     function setBusyButton(button, busy, label) { button.disabled = busy; button.textContent = label; }
     function sourceName(source) { return source === 'real' ? '真实行情' : source === 'spot' ? '公共现货行情' : source === 'synthetic' ? '合成行情' : '正在连接'; }
     function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', recovery: '回收' })[mode] || mode; }
     function snap(value, step) { return Math.round(value / step) * step; }
     function trimNumber(value, digits) { return Number(value.toFixed(digits)).toString(); }
-    function format(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '--'; }
-    function money(value) { const n = Number(value); if (!Number.isFinite(n)) return '--'; const digits = Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : 6; return n.toLocaleString('zh-CN', { maximumFractionDigits: digits }); }
-    function signed(value, digits = 2) { const n = Number(value); return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${format(n, digits)}` : '--'; }
-    function setSigned(element, value) { const n = Number(value); element.textContent = signed(n, 2); element.classList.toggle('positive', n > 0); element.classList.toggle('negative', n < 0); }
+    function format(value, digits = 2) { if (value == null || value === '') return '--'; const n = Number(value); return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '--'; }
+    function money(value) { if (value == null || value === '') return '--'; const n = Number(value); if (!Number.isFinite(n)) return '--'; const digits = Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : 6; return n.toLocaleString('zh-CN', { maximumFractionDigits: digits }); }
+    function signed(value, digits = 2) { if (value == null || value === '') return '--'; const n = Number(value); return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${format(n, digits)}` : '--'; }
+    function setSigned(element, value) { const n = value == null || value === '' ? NaN : Number(value); element.textContent = signed(value, 2); element.classList.toggle('positive', n > 0); element.classList.toggle('negative', n < 0); }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]); }
     let toastTimer;
     function showToast(message, error = false) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').className = `toast show${error ? ' error' : ''}`; toastTimer = setTimeout(() => $('toast').className = 'toast', 3200); }

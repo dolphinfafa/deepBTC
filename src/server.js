@@ -19,6 +19,7 @@ import { loadConnectionSettings, updateConnectionSettings, publicConnectionSetti
 import { publicAiConfig } from './ai/provider.js';
 import { loadAiSettings, updateAiSettings, publicAiSettings } from './ai/settings.js';
 import { createAiService } from './ai/service.js';
+import { projectDashboardState, resolveDashboardRoute } from './dashboard-routing.js';
 
 const cfg = getConfig();
 const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(cfg.host.toLowerCase());
@@ -67,7 +68,7 @@ if (cfg.decibel.mode === 'live') liveRisk.observe(bot.getState().equity);
 dailyPnl.observe(bot.getState().equity, notifier.publicSettings().timezone);
 audit.write('server_started', { mode: cfg.decibel.mode, network: cfg.decibel.network, autoResume: cfg.autoResume });
 
-const streamClients = new Set();
+const streamClients = new Map();
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -124,6 +125,7 @@ const server = http.createServer(async (request, response) => {
         autoRebalanceIntervalMs: cfg.autoRebalanceIntervalMs,
         autoRebalanceCooldownMs: cfg.autoRebalanceCooldownMs,
         btcOnly: cfg.decibel.btcOnly,
+        dashboardPages: ['paper', 'live'],
         strategy: cfg.decibel.strategy,
         requireFreshPreflight: cfg.requireFreshPreflight,
         riskPolicy: cfg.riskPolicy,
@@ -179,7 +181,7 @@ const server = http.createServer(async (request, response) => {
       }, url.pathname);
     }
 
-    if (url.pathname === '/api/state') return send(response, 200, publicState());
+    if (url.pathname === '/api/state') return send(response, 200, publicState(requestedConsoleMode(url)));
 
     if (url.pathname === '/api/stream') {
       response.writeHead(200, {
@@ -187,8 +189,9 @@ const server = http.createServer(async (request, response) => {
         'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
       });
-      writeEvent(response, publicState());
-      streamClients.add(response);
+      const consoleMode = requestedConsoleMode(url);
+      writeEvent(response, publicState(consoleMode));
+      streamClients.set(response, consoleMode);
       request.on('close', () => streamClients.delete(response));
       return;
     }
@@ -446,7 +449,8 @@ const server = http.createServer(async (request, response) => {
     }
     if (url.pathname === '/api/proxy-check') return send(response, 200, await checkProxy());
 
-    return serveStatic(url.pathname, response);
+    const dashboardRoute = resolveDashboardRoute(url.pathname);
+    return serveStatic(dashboardRoute.matched ? '/index.html' : url.pathname, response);
   } catch (error) {
     audit.write('api_request_failed', { path: url.pathname, error: error?.message || String(error) }, 'error');
     return send(response, 500, { error: error?.message || String(error) });
@@ -455,8 +459,8 @@ const server = http.createServer(async (request, response) => {
 
 setInterval(() => {
   const state = publicState();
-  for (const client of streamClients) {
-    try { writeEvent(client, state); }
+  for (const [client, consoleMode] of streamClients) {
+    try { writeEvent(client, consoleMode ? projectDashboardState(state, cfg.decibel.mode, consoleMode) : state); }
     catch { streamClients.delete(client); }
   }
 }, 1000).unref();
@@ -478,7 +482,7 @@ setInterval(() => processDailyReport().catch((error) => {
 }), 30_000).unref();
 
 setInterval(() => {
-  for (const client of streamClients) {
+  for (const client of streamClients.keys()) {
     try { client.write(': heartbeat\n\n'); }
     catch { streamClients.delete(client); }
   }
@@ -663,7 +667,7 @@ async function runPreflight() {
   return lastPreflight;
 }
 
-function publicState() {
+function publicState(consoleMode = null) {
   const state = bot.getState();
   const notificationSettings = notifier.publicSettings();
   const readiness = publicPaperReadiness(state);
@@ -676,13 +680,14 @@ function publicState() {
       dataSource: readiness.dataSource || lastPaperReadiness.dataSource,
     }
     : readiness;
-  return {
+  const result = {
     ...state,
     liveRisk: liveRisk.status(state.equity),
     dailyPnl: dailyPnl.summary(state.equity, notificationSettings.timezone),
     preflight: lastPreflight ? { t: lastPreflight.t, expiresAt: lastPreflight.expiresAt, ready: lastPreflight.ready } : null,
     paperReadiness: mergedReadiness,
   };
+  return consoleMode ? projectDashboardState(result, cfg.decibel.mode, consoleMode) : result;
 }
 
 function autoRebalancePublicState() {
@@ -1151,7 +1156,7 @@ async function shutdown(signal) {
     await notifySafe('[GridPilot] 程序正在退出，未自动撤单或平仓。请立即到 Decibel 核对挂单与仓位。');
   }
   exchange.stop?.();
-  for (const client of streamClients) {
+  for (const client of streamClients.keys()) {
     try { client.end(); } catch { /* already closed */ }
   }
   server.close(() => process.exit(0));
@@ -1178,4 +1183,9 @@ function serveStatic(requestPath, response) {
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function requestedConsoleMode(url) {
+  const mode = url.searchParams.get('console');
+  return mode === 'paper' || mode === 'live' ? mode : null;
 }
