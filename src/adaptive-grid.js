@@ -23,6 +23,8 @@ export function suggestAdaptiveGrid({ price, atrPct, equity, market, trend = 'ra
     mode: 'neutral',
     lower, upper, gridCount, sizeBase: snap(sizeBase, stepSize), leverage,
     outOfRangeAction: 'close',
+    maxDirectionalNotionalPct: 15,
+    trendGuardEnabled: true,
     atrPct: Number((atrFraction * 100).toFixed(3)),
     halfWidthPct: Number((halfWidth * 100).toFixed(2)),
     trend,

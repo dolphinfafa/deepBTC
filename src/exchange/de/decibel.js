@@ -391,7 +391,8 @@ export class DecibelExchange extends EventEmitter {
     this._watch.add(m.marketId);
     this._tracked.set(orderId, {
       marketId: m.marketId, levelIndex: o.levelIndex, side: o.side,
-      price: priceUsed, sizeBase: sizeUsed, seen: false,
+      price: priceUsed, sizeBase: sizeUsed, reduceOnly: !!o.reduceOnly,
+      clientOrderId: o.clientOrderId, seen: false,
       placedAt: Date.now(), goneAttempts: 0, resolving: false,
     });
     return { orderId, price: priceUsed, sizeBase: sizeUsed };
@@ -450,17 +451,23 @@ export class DecibelExchange extends EventEmitter {
         }
       }
       const side = (o.is_buy === true || /buy|long/i.test(String(o.side ?? ''))) ? 'buy' : 'sell';
-      out.push({ orderId: String(o.order_id), price: px, side });
+      out.push({
+        orderId: String(o.order_id), price: px, side,
+        sizeBase: pickNum(o, 'remaining_size', 'orig_size', 'size'),
+        reduceOnly: (o.is_reduce_only ?? o.reduce_only) === true || String(o.is_reduce_only ?? o.reduce_only).toLowerCase() === 'true',
+        clientOrderId: o.client_order_id,
+      });
     }
     return out;
   }
 
   /** Re-attach a previously-placed order to this adapter's tracking (resume). */
-  adoptOrder({ orderId, marketId, levelIndex, side, price, sizeBase }) {
+  adoptOrder({ orderId, marketId, levelIndex, side, price, sizeBase, reduceOnly = false, clientOrderId }) {
     const mId = Number(marketId);
     this._watch.add(mId);
     this._tracked.set(String(orderId), {
       marketId: mId, levelIndex, side, price: Number(price), sizeBase: Number(sizeBase),
+      reduceOnly: !!reduceOnly, clientOrderId,
       seen: false, placedAt: Date.now(), goneAttempts: 0, resolving: false,
     });
   }

@@ -14,6 +14,7 @@ import { updateAiSettings, publicAiSettings, loadAiSettings } from '../src/ai/se
 import { EventEmitter } from 'node:events';
 import { decibelAuthHeaders } from '../src/exchange/de/auth.js';
 import { PaperExchange } from '../src/exchange/de/paper.js';
+import { directionalExposure, inventoryOrderDecision } from '../src/strategy-guards.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -89,6 +90,50 @@ test('locks the first strategy to BTC-USD and 10-40 grids', () => {
   assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 20 }, market: { displayName: 'ETH-USD' } }).ok, false);
 });
 
+test('directional exposure uses account equity as its cap basis', () => {
+  const exposure = directionalExposure({
+    positionSize: -0.02,
+    price: 75_000,
+    equity: 10_000,
+    maxDirectionalNotionalPct: 15,
+  });
+  assert.equal(exposure.side, 'short');
+  assert.equal(exposure.notional, 1_500);
+  assert.equal(exposure.pct, 15);
+  assert.equal(exposure.atCap, true);
+});
+
+test('inventory guard makes exits reduce-only and caps their size', () => {
+  const decision = inventoryOrderDecision({
+    side: 'sell', sizeBase: 0.01, positionSize: 0.004,
+    price: 75_000, equity: 10_000, maxDirectionalNotionalPct: 15,
+    trendGuardEnabled: true, trend: 'up', trendStrength: 0.9,
+  });
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reduceOnly, true);
+  assert.equal(decision.opening, false);
+  assert.equal(decision.sizeBase, 0.004);
+});
+
+test('inventory guard blocks the order that would exceed directional exposure', () => {
+  const decision = inventoryOrderDecision({
+    side: 'sell', sizeBase: 0.005, positionSize: -0.02,
+    price: 75_000, equity: 10_000, maxDirectionalNotionalPct: 15,
+  });
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reason, 'exposure_cap');
+});
+
+test('trend guard pauses only the dangerous opening direction', () => {
+  const base = {
+    sizeBase: 0.001, positionSize: 0, price: 75_000, equity: 10_000,
+    maxDirectionalNotionalPct: 15, trendGuardEnabled: true,
+    trend: 'up', trendStrength: 0.8, trendGuardMinStrength: 0.55,
+  };
+  assert.equal(inventoryOrderDecision({ ...base, side: 'sell' }).reason, 'trend_up_blocks_short');
+  assert.equal(inventoryOrderDecision({ ...base, side: 'buy' }).allowed, true);
+});
+
 test('paper exchange exposes only the exact BTC-USD market', async () => {
   const exchange = new PaperExchange({ btcOnly: true });
   exchange._setMarkets([
@@ -126,6 +171,8 @@ test('dashboard state never exposes a running paper bot as a running live bot', 
     mode: 'paper', running: true, config: { displayName: 'BTC-USD' },
     openOrders: 28, exchangeOpenOrders: 28, equity: 10_000,
     position: { sizeBase: 0.01 }, totalPnl: 12.5,
+    strategyGuard: { exposure: { pct: 12 } }, executionCosts: { total: 3 },
+    measurement: { id: 'paper-run' }, measurementHistory: [{ id: 'old-paper-run' }],
     activity: [{ t: 1, message: 'paper fill' }], lastPrice: 77_000,
   };
   const liveView = projectDashboardState(paperState, 'paper', 'live');
@@ -140,6 +187,9 @@ test('dashboard state never exposes a running paper bot as a running live bot', 
   assert.equal(liveView.equity, null);
   assert.equal(liveView.totalPnl, null);
   assert.deepEqual(liveView.activity, []);
+  assert.equal(liveView.strategyGuard, null);
+  assert.equal(liveView.executionCosts, null);
+  assert.equal(liveView.measurement, null);
   assert.equal(liveView.lastPrice, 77_000);
   assert.equal(liveView.health.reason, '实盘服务未启动');
 });
@@ -362,6 +412,96 @@ test('paper exchange restores account state and advances adopted order ids', asy
   assert.equal(placed.orderId, 'paper-81');
 });
 
+test('paper exchange reports fees, slippage, spread and funding separately', () => {
+  const exchange = new PaperExchange({
+    startBalance: 10_000,
+    feeRate: 0.001,
+    slippageBps: 10,
+    spreadBps: 5,
+    fundingRate: 0.001,
+    fundingIntervalMs: 8 * 3_600_000,
+  });
+  exchange.prices.set(1, 100);
+  exchange.lastFundingAt = 0;
+  exchange._applyFill(1, 'buy', 100, 2);
+  exchange._applyFunding(8 * 3_600_000);
+  const costs = exchange.getExecutionCosts();
+  assert.equal(costs.fees, 0.2);
+  assert.equal(costs.slippage, 0.2);
+  assert.equal(costs.spread, 0.1);
+  assert.equal(costs.funding, 0.2);
+  assert.equal(costs.total, 0.7);
+  assert.equal(exchange.balance, 9999.3);
+});
+
+test('paper partial fills retain the remaining order and expose remaining size', async () => {
+  const exchange = new PaperExchange({
+    fillDelayMs: 0,
+    partialFillProbability: 1,
+    partialFillRatio: 0.5,
+    feeRate: 0,
+    slippageBps: 0,
+    spreadBps: 0,
+    random: () => 0,
+  });
+  const fills = [];
+  exchange.on('fill', (fill) => fills.push(fill));
+  await exchange.placeLimitOrder({ marketId: 1, levelIndex: 1, side: 'buy', price: 100, sizeBase: 1 });
+  exchange._matchFills(1, 101, 99);
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].sizeBase, 0.5);
+  assert.equal(fills[0].remainingSize, 0.5);
+  assert.equal(exchange.getOpenOrders(1)[0].remainingSize, 0.5);
+});
+
+test('bot keeps a partially filled order active until its remaining size is zero', () => {
+  const exchange = fakeLiveExchange();
+  const bot = new GridBot(exchange);
+  bot.running = true;
+  bot.config = { ...gridConfig(), displayName: 'TEST-USD', maxDirectionalNotionalPct: 15, trendGuardEnabled: false };
+  bot.grid = buildGrid({ lower: 90, upper: 110, gridCount: 4 });
+  bot.outOfRange = true;
+  bot.active.set('partial-1', { levelIndex: 1, side: 'buy', price: 95, sizeBase: 1, opening: true });
+  bot._handleFill({ orderId: 'partial-1', marketId: 1, levelIndex: 1, side: 'buy', price: 95, sizeBase: 0.4, remainingSize: 0.6 });
+  assert.equal(bot.active.get('partial-1').sizeBase, 0.6);
+  assert.equal(bot.stats.buys, 1);
+  bot.running = false;
+});
+
+test('bot reclassifies exits as reduce-only and pauses opening orders beyond the exposure cap', async () => {
+  const exchange = new PaperExchange({
+    startBalance: 1000,
+    fillDelayMs: 0,
+    partialFillProbability: 0,
+    feeRate: 0,
+    slippageBps: 0,
+    spreadBps: 0,
+  });
+  exchange.markets.set(1, { marketId: 1, displayName: 'BTC-USD', symbol: 'BTC', maxLeverage: 20, minOrderSize: 0.01, stepSize: 0.01, stepPrice: 0.1 });
+  exchange.prices.set(1, 100);
+  exchange.realTarget.set(1, 100);
+  exchange.candleDataSource = 'spot';
+  exchange.getCandles = async () => Array.from({ length: 60 }, (_, index) => ({ time: index, open: 100, high: 101, low: 99, close: 100, volume: 1 }));
+  exchange.start = () => {};
+
+  const bot = new GridBot(exchange);
+  await bot.start({ ...gridConfig(), maxDirectionalNotionalPct: 15, trendGuardEnabled: true });
+  exchange._matchFills(1, 100, 94);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(exchange.getPosition(1).sizeBase, 1);
+  assert.equal([...bot.active.values()].some((order) => order.opening && order.side === 'buy'), false);
+  assert.ok([...bot.active.values()].filter((order) => order.side === 'sell').every((order) => order.reduceOnly));
+  assert.ok(bot.getState().strategyGuard.blockedOpeningSides.includes('buy'));
+
+  exchange._matchFills(1, 94, 101);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(exchange.getPosition(1), null);
+  assert.ok([...bot.active.values()].some((order) => order.opening && order.side === 'buy'));
+  assert.ok([...bot.active.values()].some((order) => order.opening && order.side === 'sell'));
+  await bot.stop({ closePosition: false });
+});
+
 test('legacy paper state restores only the configured market position', () => {
   const exchange = new PaperExchange({ startBalance: 10000 });
   exchange.restoreState({
@@ -413,6 +553,9 @@ test('range adjustment re-seeds orders without closing the position', async () =
   assert.equal(bot.config.upper, 105);
   assert.equal(bot.running, true);
   assert.ok(bot.active.size > 0);
+  assert.equal(bot.getState().measurement.sequence, 2);
+  assert.equal(bot.getState().measurementHistory.length, 1);
+  assert.equal(bot.getState().stats.completedRungs, 0);
   assert.equal(exchange.closeCalls, 0);
   await bot.stop({ closePosition: false });
 });

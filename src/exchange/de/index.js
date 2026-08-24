@@ -15,5 +15,16 @@ export function createExchange(cfg) {
       apiUrl: cfg.apiUrl, origin: cfg.origin, network: cfg.network,
     });
   }
-  return new PaperExchange({ apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, origin: cfg.origin, network: cfg.network, btcOnly: cfg.btcOnly, startBalance: cfg.startBalance });
+  return new PaperExchange({
+    apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, origin: cfg.origin,
+    network: cfg.network, btcOnly: cfg.btcOnly, startBalance: cfg.startBalance,
+    feeRate: cfg.paperFeeRate,
+    slippageBps: cfg.paperSlippageBps,
+    spreadBps: cfg.paperSpreadBps,
+    fundingRate: cfg.paperFundingRate,
+    fundingIntervalMs: cfg.paperFundingIntervalMs,
+    fillDelayMs: cfg.paperFillDelayMs,
+    partialFillProbability: cfg.paperPartialFillProbability,
+    partialFillRatio: cfg.paperPartialFillRatio,
+  });
 }

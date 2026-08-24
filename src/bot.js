@@ -5,6 +5,13 @@
 // alerts (optional auto-stop), periodic open-order reconciliation, crash-safe
 // persistence with resume-on-restart, live range adjustment, and a health probe.
 import { buildGrid, seedOrders, replacementFor, isReduceOnly } from './grid.js';
+import { analyzeTrend } from './trend.js';
+import {
+  STRATEGY_GUARD_DEFAULTS,
+  directionalExposure,
+  guardReasonText,
+  inventoryOrderDecision,
+} from './strategy-guards.js';
 
 const RECONCILE_MS = 30000;   // periodic open-order reconciliation cadence
 const PRUNE_GRACE_MS = 20000; // don't prune a tracked order younger than this
@@ -49,6 +56,17 @@ export class GridBot {
     this._noPosStreak = 0;           // consecutive empty-position observations (recovery finish guard)
     this._pnlBase = null;            // realizedPnl baseline; resetStats uses an offset because some
                                      // Some adapters re-fetch realizedPnl from the exchange every poll.
+    this._unrealizedBase = 0;
+    this._costBase = emptyCosts();
+    this.measurement = null;
+    this.measurementHistory = [];
+    this._measurementSeq = 0;
+    this.strategyGuard = defaultGuardState();
+    this._guardTimer = null;
+    this._guardRefreshInFlight = null;
+    this._guardSync = Promise.resolve();
+    this._guardBlockAt = new Map();
+    this._guardDeferred = new Map();
   }
 
   /**
@@ -82,6 +100,10 @@ export class GridBot {
     return {
       running: this.running, config: this.config, stats: this.stats,
       recovery: this.recovery, pnlBase: this._pnlBase,
+      unrealizedBase: this._unrealizedBase, costBase: this._costBase,
+      measurement: this.measurement, measurementHistory: this.measurementHistory,
+      measurementSeq: this._measurementSeq, strategyGuard: this.strategyGuard,
+      guardDeferred: [...this._guardDeferred.entries()],
       startBalance: this.startBalance, outOfRange: this.outOfRange, lastPrice: this.lastPrice,
       fills: this.fills.slice(0, 50), alerts: this.alerts.slice(0, 30),
       activity: this.activity.slice(0, 200),
@@ -96,10 +118,11 @@ export class GridBot {
    */
   restore(snap) {
     if (!snap || !snap.config) return;
-    this.config = snap.config;
+    this.config = withGuardDefaults(snap.config);
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0, ...(snap.stats || {}) };
     this.startBalance = snap.startBalance ?? null;
     this._pnlBase = snap.pnlBase ?? null;
+    this._restoreMeasurement(snap);
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
     this.activity = restoreActivity(snap);
@@ -122,10 +145,11 @@ export class GridBot {
     // CANCELLED the whole ladder while the position stayed open.
     if (snap.recovery || snap.config.mode === 'recovery') return this._resumeRecovery(snap, restoreContext);
     if (!Array.isArray(snap.active)) throw new Error('无可恢复的运行中网格快照');
-    this.config = snap.config;
+    this.config = withGuardDefaults(snap.config);
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0, ...(snap.stats || {}) };
     this.startBalance = snap.startBalance ?? null;
     this._pnlBase = snap.pnlBase ?? null;
+    this._restoreMeasurement(snap);
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
     this.activity = restoreActivity(snap);
@@ -149,7 +173,9 @@ export class GridBot {
           this.ex.adoptOrder({
             orderId: oid, marketId: this.config.marketId, levelIndex: info.levelIndex,
             side: info.side, price: info.price, sizeBase: info.sizeBase ?? this.config.sizeBase,
-            reduceOnly: !!info.recovery || isReduceOnly(info.side, this.config.mode),
+            remainingSize: info.sizeBase ?? this.config.sizeBase,
+            reduceOnly: !!info.reduceOnly || !!info.recovery || isReduceOnly(info.side, this.config.mode),
+            clientOrderId: info.clientOrderId,
           });
         } catch { /* best effort */ }
       }
@@ -160,6 +186,8 @@ export class GridBot {
     if (typeof this.ex.start === 'function') this.ex.start();
     this.running = true;
     this._startReconcileTimer();
+    this._startGuardTimer();
+    this._refreshTrendGuard(true).catch(() => {});
     this._alert(`已恢复运行中的 ${this.config.displayName} ${labelMode(this.config.mode)}：接管 ${this.active.size} 个挂单，正在与交易所对账…`);
     this.reconcileOpenOrders().catch(() => {}); // immediate reconcile
     this._changed();
@@ -172,6 +200,7 @@ export class GridBot {
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0, ...(snap.stats || {}) };
     this.startBalance = snap.startBalance ?? null;
     this._pnlBase = snap.pnlBase ?? null;
+    this._restoreMeasurement(snap);
     this.fills = Array.isArray(snap.fills) ? snap.fills.slice(0, 50) : [];
     this.alerts = Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30) : [];
     this.activity = restoreActivity(snap);
@@ -242,6 +271,10 @@ export class GridBot {
       gridCount: Number(cfg.gridCount), sizeBase, leverage,
       // 区间外止损策略：'close'=冲破区间平仓（撤单+平仓+停止）；'recover'=只减仓回收阶梯
       outOfRangeAction: cfg.outOfRangeAction === 'recover' ? 'recover' : 'close',
+      maxDirectionalNotionalPct: bounded(cfg.maxDirectionalNotionalPct, 1, 100, STRATEGY_GUARD_DEFAULTS.maxDirectionalNotionalPct),
+      trendGuardEnabled: cfg.trendGuardEnabled !== false,
+      trendGuardMinStrength: bounded(cfg.trendGuardMinStrength, 0, 1, STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength),
+      trendGuardRefreshMs: bounded(cfg.trendGuardRefreshMs, 60_000, 60 * 60_000, STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs),
       stepSize: market.stepSize, stepPrice: market.stepPrice,
       minOrderSize: market.minOrderSize,
       maxLeverage: market.maxLeverage,
@@ -250,6 +283,7 @@ export class GridBot {
     this._recomputeRisk();
     this._refillPausedUntil = 0; this._cancelTimes = []; // fresh start clears any back-off
     this._retryQueue = []; this._noPosStreak = 0;
+    this._guardDeferred.clear();
     this.recovery = false;
 
     // record the starting equity up front (margin pre-check, returnPct, recovery)
@@ -275,9 +309,12 @@ export class GridBot {
 
     // ---- fee vs spacing sanity check ----
     const feeRate = Number(this.ex.feeRate) || 0.0005;
-    const roundTripFeePct = feeRate * 2 * 100;
-    if (this.risk.spacingPct <= roundTripFeePct) {
-      this._alert(`⚠️ 网格间距 ${this.risk.spacingPct}% 不足以覆盖往返手续费（约 ${round2(roundTripFeePct)}%），每完成一格可能亏损。建议拉大间距或减少网格数。`);
+    const simulatedFrictionRate = this.ex.mode === 'paper'
+      ? (Number(this.ex.slippageBps || 0) + Number(this.ex.spreadBps || 0)) / 10_000
+      : 0;
+    const roundTripCostPct = (feeRate + simulatedFrictionRate) * 2 * 100;
+    if (this.risk.spacingPct <= roundTripCostPct) {
+      this._alert(`⚠️ 网格间距 ${this.risk.spacingPct}% 不足以覆盖预计往返执行损耗（约 ${round2(roundTripCostPct)}%），每完成一格可能亏损。建议拉大间距或减少网格数。`);
     }
 
     const levOk = await this.ex.setLeverage(market.marketId, leverage).catch(() => false);
@@ -299,6 +336,8 @@ export class GridBot {
     }
     this.outOfRange = this.lastPrice < this.config.lower || this.lastPrice > this.config.upper;
 
+    await this._refreshTrendGuard(true);
+
     this.ex.on('fill', this._onFill);
     this.ex.on('price', this._onPrice);
     if (typeof this.ex.start === 'function') this.ex.start();
@@ -310,14 +349,17 @@ export class GridBot {
     if (this.ex.mode === 'live' && placed !== seeds.length) {
       const rolledBack = await this._cancelAllTracked('启动失败回滚', market.marketId);
       this.active.clear();
+      this._guardDeferred.clear();
       this.ex.off('fill', this._onFill);
       this.ex.off('price', this._onPrice);
       throw new Error(`初始网格仅成功挂出 ${placed}/${seeds.length} 单，已中止启动${rolledBack ? '并撤回已挂订单' : '；撤单未完全确认，请立即到 Decibel 核对'}。`);
     }
 
     if (this.startBalance == null && typeof this.ex.balance === 'number') this.startBalance = this.ex.balance;
+    this._beginMeasurement('fresh_start');
     this.running = true;
     this._startReconcileTimer();
+    this._startGuardTimer();
     this._alert(`已启动 ${this.config.displayName} ${labelMode(this.config.mode)}，${this.grid.count} 格，间距 ${this.grid.spacing}（${this.risk.spacingPct}%），杠杆 ${leverage}x，挂出 ${this.active.size} 单。`);
     this._changed();
     return this.getState();
@@ -325,6 +367,7 @@ export class GridBot {
 
   async stop({ closePosition = true } = {}) {
     this._stopReconcileTimer();
+    this._stopGuardTimer();
     if (!this.running) {
       if (this.config) {
         const cancelled = await this._cancelAllTracked('停止并平仓');
@@ -335,6 +378,7 @@ export class GridBot {
         this._alert('已尝试撤销该市场的所有挂单并平仓。');
       }
       this.active.clear();
+      this._guardDeferred.clear();
       this._retryQueue = [];
       this._changed();
       return this.getState();
@@ -345,6 +389,7 @@ export class GridBot {
     if (cancelled !== false) this._exchangeOpenOrders = 0;
     if (cancelled === false) this._alert('❌ 未能确认撤销全部挂单，请立即到交易所人工核对。');
     this.active.clear();
+    this._guardDeferred.clear();
     let closeRequested = false;
     if (closePosition && typeof this.ex.closePosition === 'function') {
       await this._closeWithConfirm(this.config.marketId);
@@ -369,11 +414,13 @@ export class GridBot {
   async cancelAllOrders() {
     if (!this.config) throw new Error('尚未配置市场，没有可撤的挂单。');
     this._stopReconcileTimer();
+    this._stopGuardTimer();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
     const cancelled = await this._cancelAllTracked('一键撤销挂单');
     if (cancelled !== false) this._exchangeOpenOrders = 0;
     this.active.clear();
+    this._guardDeferred.clear();
     this.running = false;
     this._refillPausedUntil = 0; this._cancelTimes = []; this._retryQueue = [];
     this._alert(cancelled === false
@@ -388,7 +435,7 @@ export class GridBot {
    * the new range; if it passes, current orders are cancelled and the ladder is
    * re-seeded around the live price. The open POSITION is left untouched.
    */
-  async adjustRange({ lower, upper }) {
+  async adjustRange({ lower, upper, measurementReason = 'range_adjustment' }) {
     if (!this.running || !this.config) throw new Error('网格未在运行，无法调整区间。');
     const lo = Number(lower), hi = Number(upper);
     if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) throw new Error('上边界必须大于下边界。');
@@ -411,6 +458,7 @@ export class GridBot {
       throw new Error('未能确认撤销旧区间挂单，已取消调整，避免新旧网格叠加。请到 Decibel 核对。');
     }
     this.active.clear();
+    this._guardDeferred.clear();
     this._refillPausedUntil = 0; this._cancelTimes = []; // user re-set the range: clear back-off
     this.config = { ...this.config, lower: lo, upper: hi };
     this.grid = newGrid;
@@ -423,14 +471,17 @@ export class GridBot {
       if (placed !== seeds.length) {
         const rolledBack = await this._cancelAllTracked('区间调整失败回滚');
         this.active.clear();
+        this._guardDeferred.clear();
         this.running = false;
         this.ex.off('fill', this._onFill);
         this.ex.off('price', this._onPrice);
         this._stopReconcileTimer();
+        this._stopGuardTimer();
         this._changed();
         throw new Error(`新区间仅成功挂出 ${placed}/${seeds.length} 单，网格已停止、持仓保留${rolledBack ? '' : '；撤单未完全确认，请立即到 Decibel 核对'}。`);
       }
     }
+    this._beginMeasurement(measurementReason);
     this._alert(`已调整区间为 [${lo}, ${hi}]，${newGrid.count} 格，间距 ${newGrid.spacing}（${this.risk.spacingPct}%），重新挂出 ${this.active.size} 单（持仓保留）。`);
     this._changed();
     return this.getState();
@@ -438,20 +489,238 @@ export class GridBot {
 
   /** Zero cumulative stats and re-baseline PnL to the current equity. */
   resetStats() {
+    this._beginMeasurement('manual_reset');
+    this._alert('已开始新的统计周期：盈亏、执行成本、成交额和完成格数均以当前状态为新基准。');
+    this._changed();
+    return this.getState();
+  }
+
+  _restoreMeasurement(snap) {
+    this._unrealizedBase = Number(snap.unrealizedBase) || 0;
+    this._costBase = normalizeCosts(snap.costBase);
+    this.measurement = snap.measurement && typeof snap.measurement === 'object' ? snap.measurement : null;
+    this.measurementHistory = Array.isArray(snap.measurementHistory) ? snap.measurementHistory.slice(0, 12) : [];
+    this._measurementSeq = Number(snap.measurementSeq) || 0;
+    this.strategyGuard = { ...defaultGuardState(), ...(snap.strategyGuard || {}) };
+    this._guardDeferred = new Map(Array.isArray(snap.guardDeferred) ? snap.guardDeferred : []);
+  }
+
+  _beginMeasurement(reason) {
+    if (this.measurement) {
+      this.measurementHistory.unshift({
+        ...this.measurement,
+        endedAt: Date.now(),
+        results: this._measurementResults(),
+      });
+      if (this.measurementHistory.length > 12) this.measurementHistory.length = 12;
+    }
+    const position = this.ex.getPosition?.(this.config?.marketId);
+    const rawUnrealized = Number(position?.unrealizedPnl) || 0;
+    const rawRealized = typeof this.ex.realizedPnl === 'number' ? this.ex.realizedPnl : null;
+    const costs = this._executionCostsRaw();
+    const equity = this._currentEquity(rawUnrealized);
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0 };
     this.fills = [];
     this._placeFails = 0;
     this._lastFailAt = 0;
-    this._refillPausedUntil = 0; this._cancelTimes = [];
-    this.startBalance = typeof this.ex.equity === 'number' ? this.ex.equity
-      : typeof this.ex.balance === 'number' ? this.ex.balance : this.startBalance;
-    // Offset-based reset: live adapters can refresh realizedPnl from the
-    // exchange every poll, so writing 0 into it never sticks — record a
-    // baseline instead and subtract it in getState.
-    this._pnlBase = typeof this.ex.realizedPnl === 'number' ? this.ex.realizedPnl : null;
-    this._alert('已重置统计：已实现盈亏、收益率、成交量、完成格数清零，并以当前权益为新基准。');
-    this._changed();
-    return this.getState();
+    this._refillPausedUntil = 0;
+    this._cancelTimes = [];
+    this._pnlBase = rawRealized;
+    this._unrealizedBase = rawUnrealized;
+    this._costBase = costs;
+    this.startBalance = equity;
+    const sequence = ++this._measurementSeq;
+    this.measurement = {
+      id: `${this.ex.mode || 'grid'}-${Date.now()}-${sequence}`,
+      sequence,
+      parameterVersion: `v${sequence}`,
+      startedAt: Date.now(),
+      reason,
+      baselineEquity: round2(equity),
+      baselineRealizedPnl: rawRealized == null ? null : round2(rawRealized),
+      baselineUnrealizedPnl: round2(rawUnrealized),
+      baselineExecutionCosts: costs,
+      params: parameterSnapshot(this.config),
+    };
+  }
+
+  _measurementResults() {
+    const position = this.ex.getPosition?.(this.config?.marketId);
+    const currentUnrealized = Number(position?.unrealizedPnl) || 0;
+    const unrealized = currentUnrealized - (this._unrealizedBase || 0);
+    const currentEquity = this._currentEquity(currentUnrealized);
+    const realized = typeof this.ex.realizedPnl === 'number'
+      ? this.ex.realizedPnl - (this._pnlBase ?? 0)
+      : (currentEquity != null && this.measurement?.baselineEquity != null)
+        ? (currentEquity - this.measurement.baselineEquity) - unrealized
+        : this.stats.gridProfit;
+    return {
+      realizedPnl: round2(realized),
+      unrealizedPnl: round2(unrealized),
+      totalPnl: round2(realized + unrealized),
+      executionCosts: subtractCosts(this._executionCostsRaw(), this._costBase),
+      stats: { ...this.stats },
+    };
+  }
+
+  _executionCostsRaw() {
+    if (typeof this.ex.getExecutionCosts === 'function') return normalizeCosts(this.ex.getExecutionCosts());
+    return normalizeCosts(this.ex.executionCosts);
+  }
+
+  _currentEquity(unrealized = null) {
+    if (typeof this.ex.equity === 'number') return this.ex.equity;
+    const balance = typeof this.ex.balance === 'number' ? this.ex.balance : null;
+    const upnl = unrealized == null
+      ? Number(this.ex.getPosition?.(this.config?.marketId)?.unrealizedPnl) || 0
+      : Number(unrealized) || 0;
+    return balance == null ? null : balance + upnl;
+  }
+
+  async _refreshTrendGuard(force = false) {
+    if (!this.config || this.recovery) return this.strategyGuard;
+    if (!this.config.trendGuardEnabled) {
+      this.strategyGuard = { ...this.strategyGuard, enabled: false, trend: 'range', strength: 0, reason: 'disabled' };
+      return this.strategyGuard;
+    }
+    const refreshMs = this.config.trendGuardRefreshMs || STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs;
+    if (!force && Date.now() - Number(this.strategyGuard.checkedAt || 0) < refreshMs) return this.strategyGuard;
+    if (this._guardRefreshInFlight) return this._guardRefreshInFlight;
+    this._guardRefreshInFlight = (async () => {
+      try {
+        const candles = await this.ex.getCandles(this.config.marketId, 3600, 200);
+        const synthetic = this.ex.candleDataSource === 'synthetic';
+        const analysis = synthetic
+          ? { trend: 'range', strength: 0, detail: '真实 K 线不可用，趋势保护保持中性。' }
+          : analyzeTrend(Array.isArray(candles) ? candles : []);
+        this.strategyGuard = {
+          ...this.strategyGuard,
+          enabled: true,
+          trend: analysis.trend || 'range',
+          strength: Number(analysis.strength) || 0,
+          minStrength: this.config.trendGuardMinStrength,
+          checkedAt: Date.now(),
+          dataSource: this.ex.candleDataSource || this.ex.dataSource || null,
+          reason: analysis.detail || null,
+          error: null,
+        };
+        if (this.running) this._scheduleGuardSync();
+      } catch (error) {
+        this.strategyGuard = {
+          ...this.strategyGuard,
+          enabled: true,
+          checkedAt: Date.now(),
+          error: error?.message || String(error),
+        };
+      } finally {
+        this._guardRefreshInFlight = null;
+      }
+      return this.strategyGuard;
+    })();
+    return this._guardRefreshInFlight;
+  }
+
+  _startGuardTimer() {
+    if (this._guardTimer || !this.config?.trendGuardEnabled) return;
+    const interval = this.config.trendGuardRefreshMs || STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs;
+    this._guardTimer = setInterval(() => this._refreshTrendGuard(true).catch(() => {}), interval);
+    this._guardTimer.unref?.();
+  }
+
+  _stopGuardTimer() {
+    if (this._guardTimer) { clearInterval(this._guardTimer); this._guardTimer = null; }
+  }
+
+  _orderDecision(order, { forceReduceOnly = false } = {}) {
+    const position = this.ex.getPosition?.(this.config.marketId);
+    const price = Number(this.lastPrice || order.price);
+    return inventoryOrderDecision({
+      side: order.side,
+      sizeBase: order.sizeBase ?? this.config.sizeBase,
+      positionSize: Number(position?.sizeBase) || 0,
+      price,
+      equity: this._currentEquity(position?.unrealizedPnl),
+      maxDirectionalNotionalPct: this.config.maxDirectionalNotionalPct,
+      forceReduceOnly,
+      trendGuardEnabled: this.config.trendGuardEnabled,
+      trend: this.strategyGuard.trend,
+      trendStrength: this.strategyGuard.strength,
+      trendGuardMinStrength: this.config.trendGuardMinStrength,
+    });
+  }
+
+  _scheduleGuardSync() {
+    this._guardSync = this._guardSync.then(() => this._enforceStrategyGuards()).catch(() => {});
+  }
+
+  async _enforceStrategyGuards() {
+    if (!this.running || !this.config || this.recovery) return;
+    const replacements = [];
+    for (const [id, info] of [...this.active]) {
+      if (info.recovery || (!info.opening && !info.inventoryManaged)) continue;
+      const managedSize = info.inventoryManaged
+        ? (Number(info.managedOpeningSize) || Number(info.sizeBase))
+        : Number(info.sizeBase);
+      const decision = this._orderDecision({ ...info, sizeBase: managedSize });
+      const desiredOpening = decision.allowed ? decision.opening : null;
+      const alreadyClassified = decision.allowed
+        && info.opening === desiredOpening
+        && Boolean(info.reduceOnly) === Boolean(decision.reduceOnly);
+      if (alreadyClassified) continue;
+      try {
+        await this.ex.cancelOrder?.(this.config.marketId, id);
+        this.active.delete(id);
+        this._activity(formatCancelActivity(info, id, decision.allowed ? '库存保护重分类' : '策略保护撤单'), 'cancel');
+      } catch { continue; }
+      if (decision.allowed) {
+        replacements.push({
+          ...info,
+          sizeBase: decision.sizeBase,
+          opening: decision.opening,
+          reduceOnly: decision.reduceOnly,
+          inventoryManaged: true,
+          managedOpeningSize: managedSize,
+        });
+      } else {
+        if (info.levelIndex != null) {
+          this._guardDeferred.set(info.levelIndex, {
+            levelIndex: info.levelIndex,
+            side: info.side,
+            price: info.price,
+            sizeBase: managedSize || this.config.sizeBase,
+            opening: true,
+          });
+        }
+        this._recordGuardBlock(decision, info);
+      }
+    }
+    for (const order of replacements) await this._place(order);
+    let resumed = 0;
+    for (const [levelIndex, order] of [...this._guardDeferred]) {
+      if ([...this.active.values()].some((active) => active.levelIndex === levelIndex)) continue;
+      const decision = this._orderDecision(order);
+      if (!decision.allowed) continue;
+      this._guardDeferred.delete(levelIndex);
+      await this._place({
+        ...order,
+        sizeBase: decision.sizeBase,
+        opening: decision.opening,
+        reduceOnly: decision.reduceOnly,
+        inventoryManaged: !decision.opening,
+        managedOpeningSize: order.sizeBase,
+      });
+      resumed++;
+    }
+    if (replacements.length || resumed) this._changed();
+  }
+
+  _recordGuardBlock(decision, order) {
+    const key = `${decision.side}:${decision.reason}`;
+    const now = Date.now();
+    if (now - Number(this._guardBlockAt.get(key) || 0) < 30_000) return;
+    this._guardBlockAt.set(key, now);
+    const level = order?.levelIndex == null ? '' : ` · 网格 ${order.levelIndex}`;
+    this._alert(`策略保护：${guardReasonText(decision.reason)}，未新增${decision.side === 'buy' ? '多' : '空'}头${level}。`);
   }
 
   _recomputeRisk() {
@@ -468,25 +737,63 @@ export class GridBot {
   }
 
   async _place(o) {
-    const opening = o.opening !== false;
-    const reduceOnly = o.reduceOnly ?? isReduceOnly(o.side, this.config.mode);
+    const requestedOpening = o.opening !== false;
+    const requestedSize = Number(o.sizeBase) > 0 ? Number(o.sizeBase) : this.config.sizeBase;
+    const managedOpeningSize = Number(o.managedOpeningSize) > 0 ? Number(o.managedOpeningSize) : requestedSize;
+    const explicitExit = !!o.recovery || o.opening === false || o.reduceOnly === true || isReduceOnly(o.side, this.config.mode);
+    let decision = this._orderDecision({ ...o, sizeBase: requestedSize }, { forceReduceOnly: explicitExit });
+    if (!decision.allowed) {
+      if (!o.recovery && requestedOpening && o.levelIndex != null) {
+        this._guardDeferred.set(o.levelIndex, {
+          levelIndex: o.levelIndex,
+          side: o.side,
+          price: o.price,
+          sizeBase: requestedSize,
+          opening: true,
+        });
+      }
+      this._recordGuardBlock(decision, o);
+      return true;
+    }
+    let opening = decision.opening;
+    let reduceOnly = decision.reduceOnly;
+    let sizeBase = decision.sizeBase;
     // Back-off: while paused (after a burst of cancellations / collateral
     // rejections) do not place new OPENING orders. CLOSING / reduce-only /
     // recovery legs need no extra margin and are never blocked — dropping a
     // take-profit leg would strand its inventory without an exit order.
-    if (opening && !o.recovery && this._refillPausedUntil && Date.now() < this._refillPausedUntil) return;
+    if (opening && !o.recovery && this._refillPausedUntil && Date.now() < this._refillPausedUntil) return true;
     // INVARIANT: at most ONE resting order per grid level. If this level is
     // already covered (or a placement for it is in flight), skip. Stacking a
     // second order on an occupied level is exactly what made the open-order
     // count creep up over time (replacement-one-rung-away colliding with the
     // order already resting there).
     const lvl = o.levelIndex;
-    if (this._pendingLevels.has(lvl)) return;
-    for (const a of this.active.values()) if (a.levelIndex === lvl) return;
+    if (this._pendingLevels.has(lvl)) return true;
+    const occupied = [...this.active.entries()].find(([, active]) => active.levelIndex === lvl);
+    if (occupied) {
+      const [occupiedId, active] = occupied;
+      // Multiple partial fills can generate exits at the same rung. Merge those
+      // reduce-only quantities into one order so the one-order-per-level
+      // invariant remains intact and every partial fill still has an exit.
+      if (!opening && active.opening === false && active.side === o.side && !active.recovery && !o.recovery) {
+        try {
+          await this.ex.cancelOrder?.(this.config.marketId, occupiedId);
+          this.active.delete(occupiedId);
+          this._activity(formatCancelActivity(active, occupiedId, '合并部分成交退出单'), 'cancel');
+          sizeBase += Number(active.sizeBase) || 0;
+          decision = this._orderDecision({ ...o, sizeBase }, { forceReduceOnly: true });
+          sizeBase = decision.sizeBase;
+          opening = false;
+          reduceOnly = true;
+        } catch { return true; }
+      } else {
+        return true;
+      }
+    }
     this._pendingLevels.add(lvl);
     const seq = (++this._coidSeq) % 1_000_000;
     const clientOrderId = Number(`${Date.now() % 1_000_000_0}${String(seq).padStart(6, '0')}`);
-    const sizeBase = Number(o.sizeBase) > 0 ? Number(o.sizeBase) : this.config.sizeBase; // per-order override (partial fills)
     try {
       const r = await this.ex.placeLimitOrder({
         marketId: this.config.marketId, side: o.side, price: o.price,
@@ -508,7 +815,11 @@ export class GridBot {
           price: placedPrice,
           sizeBase: placedSize,
           opening,
+          reduceOnly,
+          inventoryManaged: !!o.inventoryManaged || (requestedOpening && !opening),
+          managedOpeningSize: (!!o.inventoryManaged || (requestedOpening && !opening)) ? managedOpeningSize : null,
           recovery: !!o.recovery,
+          clientOrderId,
           placedAt: Date.now(),
         });
         const purpose = o.recovery ? '回收' : (opening ? '开仓' : '补挂平仓');
@@ -551,14 +862,23 @@ export class GridBot {
     if (!this.running || f.marketId !== this.config.marketId) return;
     const id = String(f.orderId);
     const act = this.active.get(id);
-    this.active.delete(id);
+    const remainingSize = Number(f.remainingSize) > 1e-12 ? Number(f.remainingSize) : 0;
+    if (remainingSize > 0 && act) {
+      act.sizeBase = remainingSize;
+      act.placedAt = Date.now();
+    } else {
+      this.active.delete(id);
+    }
     const levelIndex = act?.levelIndex ?? f.levelIndex;
     const fillPrice = Number.isFinite(f.price) ? f.price : (act?.price ?? 0);
     const fillSize = Number.isFinite(f.sizeBase) ? f.sizeBase : this.config.sizeBase;
 
     if (f.side === 'buy') this.stats.buys++; else this.stats.sells++;
     this.stats.volume = round2(this.stats.volume + fillPrice * fillSize);
-    this.fills.unshift({ t: Date.now(), side: f.side, price: fillPrice, size: fillSize, level: levelIndex });
+    this.fills.unshift({
+      t: Date.now(), side: f.side, price: fillPrice, size: fillSize,
+      level: levelIndex, partial: remainingSize > 0, costs: f.costs || null,
+    });
     if (this.fills.length > 50) this.fills.pop();
     this._activity(`订单成交 · ${sideName(f.side)} ${round6(fillSize)} @ ${round2(fillPrice)} · 网格 ${levelIndex} · #${id}`, 'fill');
 
@@ -582,9 +902,10 @@ export class GridBot {
       if (repl && !this.outOfRange && this.running) {
         repl.opening = closing; // replacement is the opposite leg
         if (fillSize > 0) repl.sizeBase = fillSize; // partial fill: mirror the actually-filled qty
-        this._place(repl);
+        this._place(repl).finally(() => this._scheduleGuardSync());
       }
     }
+    this._scheduleGuardSync();
     this._changed();
   }
 
@@ -592,6 +913,8 @@ export class GridBot {
     if (p.marketId !== this.config.marketId) return;
     this.lastPrice = p.price;
     this._drainRetryQueue();
+    this._refreshTrendGuard(false).catch(() => {});
+    this._scheduleGuardSync();
     if (this.recovery) { this._manageRecoveryStandalone(); return; }
     const out = p.price < this.config.lower || p.price > this.config.upper;
     const action = this.config.outOfRangeAction || 'close';
@@ -705,9 +1028,11 @@ export class GridBot {
         aboveEntryOnly: !!cfg.aboveEntryOnly, // 只在成本价上方(多)/下方(空)、即不亏的价位才挂减仓单
       };
       this.grid = null; this.risk = null;
+      this._stopGuardTimer();
       this.recovery = true; this.outOfRange = false; this.lastPrice = price;
       this._noPosStreak = 0; this._retryQueue = [];
       this.active.clear();
+      this._guardDeferred.clear();
       if (this.startBalance == null) {
         this.startBalance = typeof this.ex.equity === 'number' ? this.ex.equity
           : typeof this.ex.balance === 'number' ? this.ex.balance : null;
@@ -715,6 +1040,7 @@ export class GridBot {
       this.ex.on('fill', this._onFill);
       this.ex.on('price', this._onPrice);
       if (typeof this.ex.start === 'function') this.ex.start();
+      this._beginMeasurement('recovery_start');
       this.running = true;
       const dir = pos.sizeBase > 0 ? '多' : '空';
       const modeTxt = this.config.aboveEntryOnly ? '仅在成本价以上(不亏)分批减仓' : '任何反弹都分批减仓';
@@ -736,11 +1062,13 @@ export class GridBot {
     const mId = Number(marketId ?? this.config?.marketId);
     if (!Number.isFinite(mId)) throw new Error('未指定市场，无法平仓。');
     this._stopReconcileTimer();
+    this._stopGuardTimer();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
     const cancelled = await this._cancelAllTracked('立即平仓前撤单', mId);
     if (cancelled === false) this._alert('❌ 未能确认撤销全部挂单，仍将继续尝试平仓；请立即到交易所人工核对。');
     this.active.clear();
+    this._guardDeferred.clear();
     this._retryQueue = [];
     let closed = false;
     if (typeof this.ex.closePosition === 'function') {
@@ -837,6 +1165,7 @@ export class GridBot {
     if (!this.recovery) return;
     this.recovery = false;
     this._stopReconcileTimer();
+    this._stopGuardTimer();
     this._recoveryOccupied = new Set();
     this.ex.off('fill', this._onFill);
     this.ex.off('price', this._onPrice);
@@ -923,9 +1252,10 @@ export class GridBot {
           // opening/closing heuristic (mirrors _handleFill's fallback): in short
           // mode buys close, otherwise sells close.
           const closing = recovery ? true : ((this.config.mode === 'short') ? side === 'buy' : side === 'sell');
-          const reduceOnly = recovery || isReduceOnly(side, this.config.mode);
-          try { this.ex.adoptOrder?.({ orderId: o.orderId, marketId: this.config.marketId, levelIndex: idx, side, price: px, sizeBase: this.config.sizeBase, reduceOnly }); } catch { /* ignore */ }
-          this.active.set(String(o.orderId), { levelIndex: idx, side, price: px, opening: !closing, recovery, placedAt: now });
+          const reduceOnly = !!o.reduceOnly || recovery || isReduceOnly(side, this.config.mode);
+          const sizeBase = Number(o.remainingSize ?? o.sizeBase) || this.config.sizeBase;
+          try { this.ex.adoptOrder?.({ orderId: o.orderId, marketId: this.config.marketId, levelIndex: idx, side, price: px, sizeBase, reduceOnly, clientOrderId: o.clientOrderId }); } catch { /* ignore */ }
+          this.active.set(String(o.orderId), { levelIndex: idx, side, price: px, sizeBase, opening: !reduceOnly && !closing, reduceOnly, recovery, placedAt: now });
           adopted++;
         }
         continue;
@@ -1018,7 +1348,8 @@ export class GridBot {
     const openByLevel = {};
     for (const o of this.active.values()) openByLevel[o.levelIndex] = o.side;
 
-    const unrealized = pos ? round2(pos.unrealizedPnl) : 0;
+    const rawUnrealized = pos ? Number(pos.unrealizedPnl) || 0 : 0;
+    const unrealized = round2(rawUnrealized - (this._unrealizedBase || 0));
     const balance = typeof this.ex.balance === 'number' ? round2(this.ex.balance) : null;
     const equityRaw = typeof this.ex.equity === 'number' ? this.ex.equity
       : (balance != null ? balance + unrealized : null);
@@ -1036,6 +1367,33 @@ export class GridBot {
     const returnPct = (this.startBalance && this.startBalance > 0)
       ? round2((totalPnl / this.startBalance) * 100)
       : ((equity && equity > 0) ? round2((totalPnl / equity) * 100) : null);
+    const executionCosts = subtractCosts(this._executionCostsRaw(), this._costBase);
+    const directional = directionalExposure({
+      positionSize: Number(pos?.sizeBase) || 0,
+      price: this.lastPrice || pos?.entryPrice,
+      equity: equityRaw,
+      maxDirectionalNotionalPct: this.config?.maxDirectionalNotionalPct,
+    });
+    const guardOrderSize = Number(this.config?.sizeBase) || 0;
+    const buyDecision = this.config && guardOrderSize > 0
+      ? this._orderDecision({ side: 'buy', sizeBase: guardOrderSize, price: this.lastPrice })
+      : null;
+    const sellDecision = this.config && guardOrderSize > 0
+      ? this._orderDecision({ side: 'sell', sizeBase: guardOrderSize, price: this.lastPrice })
+      : null;
+    const strategyGuard = {
+      ...this.strategyGuard,
+      exposure: directional,
+      blockedOpeningSides: [
+        ...(buyDecision && !buyDecision.allowed ? ['buy'] : []),
+        ...(sellDecision && !sellDecision.allowed ? ['sell'] : []),
+      ],
+      buyReason: buyDecision && !buyDecision.allowed ? buyDecision.reason : null,
+      sellReason: sellDecision && !sellDecision.allowed ? sellDecision.reason : null,
+    };
+    const measurement = this.measurement
+      ? { ...this.measurement, elapsedMs: Date.now() - this.measurement.startedAt, results: this._measurementResults() }
+      : null;
     return {
       mode: this.ex.mode,
       recovery: this.recovery,
@@ -1050,7 +1408,7 @@ export class GridBot {
       exchangeOpenOrders: this._exchangeOpenOrders,
       openByLevel,
       health: this._health(),
-      position: pos ? { sizeBase: round6(pos.sizeBase), entryPrice: round2(pos.entryPrice), unrealizedPnl: round2(pos.unrealizedPnl), leverage: pos.leverage ?? null } : null,
+      position: pos ? { sizeBase: round6(pos.sizeBase), entryPrice: round2(pos.entryPrice), unrealizedPnl: round2(rawUnrealized), leverage: pos.leverage ?? null } : null,
       realizedPnl: realized,
       unrealizedPnl: unrealized,
       totalPnl,
@@ -1059,6 +1417,10 @@ export class GridBot {
       balance,
       volume: this.stats.volume,
       theoreticalProfit: round2(this.stats.gridProfit),
+      executionCosts,
+      strategyGuard,
+      measurement,
+      measurementHistory: this.measurementHistory.slice(0, 12),
       startBalance: this.startBalance != null ? round2(this.startBalance) : null,
       fills: this.fills.slice(0, 20),
       alerts: this.alerts.slice(0, 12),
@@ -1081,6 +1443,78 @@ function formatCancelActivity(info, id, reason) {
 function restoreActivity(snap) {
   if (Array.isArray(snap.activity)) return snap.activity.slice(0, 200);
   return Array.isArray(snap.alerts) ? snap.alerts.slice(0, 30).map((item) => ({ ...item, type: 'system' })) : [];
+}
+
+function withGuardDefaults(config) {
+  if (!config) return config;
+  return {
+    ...config,
+    maxDirectionalNotionalPct: bounded(config.maxDirectionalNotionalPct, 1, 100, STRATEGY_GUARD_DEFAULTS.maxDirectionalNotionalPct),
+    trendGuardEnabled: config.trendGuardEnabled !== false,
+    trendGuardMinStrength: bounded(config.trendGuardMinStrength, 0, 1, STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength),
+    trendGuardRefreshMs: bounded(config.trendGuardRefreshMs, 60_000, 60 * 60_000, STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs),
+  };
+}
+
+function parameterSnapshot(config) {
+  if (!config) return null;
+  return {
+    marketId: config.marketId,
+    displayName: config.displayName,
+    mode: config.mode,
+    lower: config.lower,
+    upper: config.upper,
+    gridCount: config.gridCount,
+    sizeBase: config.sizeBase,
+    leverage: config.leverage,
+    outOfRangeAction: config.outOfRangeAction,
+    maxDirectionalNotionalPct: config.maxDirectionalNotionalPct,
+    trendGuardEnabled: config.trendGuardEnabled,
+  };
+}
+
+function defaultGuardState() {
+  return {
+    enabled: STRATEGY_GUARD_DEFAULTS.trendGuardEnabled,
+    trend: 'range',
+    strength: 0,
+    minStrength: STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength,
+    checkedAt: null,
+    dataSource: null,
+    reason: '尚未检查趋势',
+    error: null,
+  };
+}
+
+function emptyCosts() {
+  return { fees: 0, slippage: 0, spread: 0, funding: 0, total: 0 };
+}
+
+function normalizeCosts(costs) {
+  const normalized = {
+    fees: Number(costs?.fees) || 0,
+    slippage: Number(costs?.slippage) || 0,
+    spread: Number(costs?.spread) || 0,
+    funding: Number(costs?.funding) || 0,
+  };
+  normalized.total = normalized.fees + normalized.slippage + normalized.spread + normalized.funding;
+  return Object.fromEntries(Object.entries(normalized).map(([key, value]) => [key, Math.round(value * 1e8) / 1e8]));
+}
+
+function subtractCosts(current, baseline) {
+  const now = normalizeCosts(current);
+  const base = normalizeCosts(baseline);
+  return normalizeCosts({
+    fees: now.fees - base.fees,
+    slippage: now.slippage - base.slippage,
+    spread: now.spread - base.spread,
+    funding: now.funding - base.funding,
+  });
+}
+
+function bounded(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }
 
 function round2(x) { return Math.round(x * 100) / 100; }

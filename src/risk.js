@@ -9,6 +9,10 @@ export const BTC_GRID_STRATEGY = Object.freeze({
   targetMarginPct: 8,
   edgeTriggerPct: 20,
   minRangeChangePct: 10,
+  maxDirectionalNotionalPct: 15,
+  trendGuardEnabled: true,
+  trendGuardMinStrength: 0.55,
+  trendGuardRefreshMs: 5 * 60_000,
 });
 
 /** Validate the fixed first-version BTC strategy constraints. */
@@ -27,6 +31,10 @@ export function evaluateStrategyParams({ params = {}, market, strategy = BTC_GRI
   }
   if (!['close', 'recover'].includes(String(params.outOfRangeAction || 'close'))) {
     errors.push('区间外动作无效，只允许撤单并平仓或只减仓回收。');
+  }
+  const maxDirectionalNotionalPct = Number(params.maxDirectionalNotionalPct ?? strategy.maxDirectionalNotionalPct);
+  if (!(maxDirectionalNotionalPct >= 1 && maxDirectionalNotionalPct <= 100)) {
+    errors.push('方向敞口上限必须在账户权益的 1%-100% 之间。');
   }
   return { ok: errors.length === 0, errors };
 }

@@ -63,6 +63,7 @@ exchange.on('error', (error) => console.error('[Decibel] ' + (error?.message || 
 await initializeExchange();
 await resumeGrid();
 await refreshPersistedMarket();
+await restoreIdlePaperState();
 await refreshPaperReadiness();
 if (cfg.decibel.mode === 'live') liveRisk.observe(bot.getState().equity);
 dailyPnl.observe(bot.getState().equity, notifier.publicSettings().timezone);
@@ -127,6 +128,16 @@ const server = http.createServer(async (request, response) => {
         btcOnly: cfg.decibel.btcOnly,
         dashboardPages: ['paper', 'live'],
         strategy: cfg.decibel.strategy,
+        paperExecution: cfg.decibel.mode === 'paper' ? {
+          feeRate: cfg.decibel.paperFeeRate,
+          slippageBps: cfg.decibel.paperSlippageBps,
+          spreadBps: cfg.decibel.paperSpreadBps,
+          fundingRate: cfg.decibel.paperFundingRate,
+          fundingIntervalMs: cfg.decibel.paperFundingIntervalMs,
+          fillDelayMs: cfg.decibel.paperFillDelayMs,
+          partialFillProbability: cfg.decibel.paperPartialFillProbability,
+          partialFillRatio: cfg.decibel.paperPartialFillRatio,
+        } : null,
         requireFreshPreflight: cfg.requireFreshPreflight,
         riskPolicy: cfg.riskPolicy,
         notificationsEnabled: notifier.enabled,
@@ -784,6 +795,8 @@ async function buildPaperReadiness(input = {}) {
     { id: 'source', label: '价格数据源', status: price > 0 ? 'pass' : 'fail', detail: `${exchange.dataSource || 'unknown'} · ${price > 0 ? price : '无有效价格'}` },
     { id: 'price', label: '有效 BTC 价格', status: price > 0 ? 'pass' : 'fail', detail: price > 0 ? String(price) : '未读取到有效价格' },
     { id: 'strategy', label: '策略参数范围', status: strategyCheck.ok ? 'pass' : 'fail', detail: strategyCheck.ok ? `${strategy.minGridCount}-${strategy.maxGridCount} 格约束通过` : strategyCheck.errors.join(' ') },
+    { id: 'inventoryGuard', label: '方向敞口保护', status: Number(params?.maxDirectionalNotionalPct ?? strategy.maxDirectionalNotionalPct) > 0 ? 'pass' : 'fail', detail: `净方向名义价值不超过权益的 ${Number(params?.maxDirectionalNotionalPct ?? strategy.maxDirectionalNotionalPct) || '--'}%` },
+    { id: 'trendGuard', label: '趋势保护', status: (params?.trendGuardEnabled ?? strategy.trendGuardEnabled) ? 'pass' : 'warn', detail: (params?.trendGuardEnabled ?? strategy.trendGuardEnabled) ? '已开启 · 每 5 分钟检查 BTC 1h K 线' : '已人工关闭' },
     { id: 'risk', label: '保证金和风险', status: riskCheck.ok ? 'pass' : 'fail', detail: riskCheck.ok ? `预计保证金 ${riskCheck.metrics?.requiredMargin ?? '--'} USDC` : riskCheck.errors.join(' ') },
     { id: 'orders', label: '遗留挂单/恢复状态', status: noOrphanState ? 'pass' : 'fail', detail: noOrphanState ? '无异常遗留状态' : '存在未托管挂单或恢复阶梯' },
     { id: 'running', label: '网格状态', status: state.running ? 'warn' : 'pass', detail: state.running ? '运行中' : '未运行，等待人工启动' },
@@ -886,7 +899,11 @@ async function maybeAutoRebalance() {
       return;
     }
     await validateRangeRisk({ lower: suggestion.lower, upper: suggestion.upper });
-    const state = await bot.adjustRange({ lower: suggestion.lower, upper: suggestion.upper });
+    const state = await bot.adjustRange({
+      lower: suggestion.lower,
+      upper: suggestion.upper,
+      measurementReason: 'auto_range',
+    });
     lastAutoRebalanceAt = now;
     lastAutoRebalanceStatus = { t: now, code: 'adjusted', reason: autoRebalanceReason('adjusted') };
     saveAutoRebalanceState();
@@ -1003,6 +1020,9 @@ function compactState(state) {
     positionSize: state.position?.sizeBase || 0,
     equity: state.equity,
     totalPnl: state.totalPnl,
+    measurementId: state.measurement?.id || null,
+    directionalExposurePct: state.strategyGuard?.exposure?.pct ?? null,
+    executionCostTotal: state.executionCosts?.total ?? null,
   };
 }
 
@@ -1027,14 +1047,21 @@ async function initializeExchange() {
 
 /** In-process paper restart: reload saved connection settings, rebuild exchange+bot. */
 async function performPaperRestart() {
+  const snapshot = bot.snapshot();
   const fresh = getConfig();
   cfg.decibel = fresh.decibel; // pick up newly saved API key / network
   try { exchange.dispose?.(); } catch { /* old instance must not block restart */ }
   exchange = createExchange(cfg.decibel);
   bot = new GridBot(exchange, { onChange: (state) => saveSnapshot('decibel', state) });
-  saveSnapshot('decibel', null); // drop stale paper snapshot so nothing resumes
+  bot.restore(snapshot);
   exchange.on('error', (error) => console.error('[Decibel] ' + (error?.message || error)));
   await initializeExchange();
+  if (bot.config) await remapMarket(bot.config);
+  exchange.restoreState?.(snapshot.exchangeState, {
+    legacyMarketId: snapshot.config?.marketId,
+    marketId: bot.config?.marketId ?? snapshot.config?.marketId,
+  });
+  saveSnapshot('decibel', bot.snapshot());
   dailyPnl.observe(bot.getState().equity, notifier.publicSettings().timezone);
 }
 
@@ -1054,6 +1081,15 @@ async function resumeGrid() {
 async function refreshPersistedMarket() {
   if (!bot.config?.displayName || exchange.dataSource == null) return;
   try { await remapMarket(bot.config); } catch { /* stale display state is non-fatal */ }
+}
+
+function restoreIdlePaperState() {
+  if (exchange.mode !== 'paper') return false;
+  const snapshot = loadSnapshot('decibel');
+  if (!snapshot?.exchangeState || snapshot.running) return false;
+  const legacyMarketId = snapshot.config?.marketId;
+  const marketId = bot.config?.marketId ?? legacyMarketId;
+  return exchange.restoreState?.(snapshot.exchangeState, { legacyMarketId, marketId }) === true;
 }
 
 async function remapMarket(config) {

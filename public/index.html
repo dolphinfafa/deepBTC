@@ -179,6 +179,8 @@
     .segmented button { height: 34px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-weight: 750; font-size: 12px; }
     .segmented button.active { background: var(--white); color: var(--ink); box-shadow: 0 1px 4px rgba(24,32,31,.12); }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin-top: 15px; }
+    .guard-controls { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; align-items: end; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .guard-controls .inline-check { min-height: 42px; }
     .field label { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 750; margin-bottom: 6px; }
     .field label small { color: #8d9693; font-weight: 500; }
     .span-2 { grid-column: span 2; }
@@ -208,6 +210,11 @@
     .monitor-metric:last-child { border-right: 0; }
     .monitor-metric span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
     .monitor-metric strong { display: block; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .strategy-monitor { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-bottom: 1px solid var(--line); }
+    .strategy-monitor-item { min-width: 0; padding: 11px 16px; border-right: 1px solid var(--line); }
+    .strategy-monitor-item:last-child { border-right: 0; }
+    .strategy-monitor-item span { display: block; color: var(--muted); font-size: 9px; margin-bottom: 4px; }
+    .strategy-monitor-item strong { display: block; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
     .monitor-body { display: grid; grid-template-columns: minmax(280px,.75fr) minmax(0,1.25fr); min-height: 270px; }
     .monitor-grid { min-width: 0; border-right: 1px solid var(--line); }
     .monitor-section-head { min-height: 42px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
@@ -247,6 +254,9 @@
       .workspace { grid-template-columns: 1fr; }
       .runtime-status { display: none; }
       .monitor-metrics { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .strategy-monitor { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .strategy-monitor-item:nth-child(2) { border-right: 0; }
+      .strategy-monitor-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
       .monitor-metric:nth-child(3) { border-right: 0; }
       .monitor-metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
     }
@@ -286,6 +296,7 @@
       .check-row { grid-template-columns: 22px 92px minmax(0,1fr); }
       .log-item { grid-template-columns: 64px 1fr; }
       .monitor-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .guard-controls { grid-template-columns: 1fr; }
       .monitor-metric:nth-child(3) { border-right: 1px solid var(--line); }
       .monitor-metric:nth-child(even) { border-right: 0; }
       .monitor-metric:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
@@ -487,9 +498,9 @@
 
     <section class="metrics" aria-label="账户概览">
       <div class="metric"><span>账户权益</span><strong id="metric-equity">--</strong><small>USDC</small></div>
-      <div class="metric"><span>总盈亏</span><strong id="metric-pnl">--</strong><small id="metric-return">收益率 --</small></div>
-      <div class="metric"><span>已实现</span><strong id="metric-realized">--</strong><small>USDC</small></div>
-      <div class="metric"><span>未实现</span><strong id="metric-unrealized">--</strong><small id="metric-unrealized-note">等待持仓</small></div>
+	      <div class="metric"><span>本周期盈亏</span><strong id="metric-pnl">--</strong><small id="metric-return">收益率 --</small></div>
+	      <div class="metric"><span>本周期已实现</span><strong id="metric-realized">--</strong><small>USDC</small></div>
+	      <div class="metric"><span>本周期未实现变化</span><strong id="metric-unrealized">--</strong><small id="metric-unrealized-note">等待持仓</small></div>
       <div class="metric"><span>完成格数</span><strong id="metric-rungs">0</strong><small id="metric-volume">成交额 --</small></div>
       <div class="metric"><span>挂单</span><strong id="metric-orders">0</strong><small id="metric-order-sync">交易所 --</small></div>
     </section>
@@ -586,6 +597,10 @@
             <div class="field"><label for="leverage">杠杆 <small>倍</small></label><input id="leverage" type="number" min="1" max="50" value="3"></div>
             <div class="field"><label for="oor-action">出区间动作</label><select id="oor-action"><option value="close">撤单并平仓</option><option value="recover">只减仓回收</option></select></div>
           </div>
+          <div class="guard-controls">
+            <div class="field"><label for="max-directional-exposure">最大方向敞口 <small>权益 %</small></label><input id="max-directional-exposure" type="number" min="1" max="100" step="1" value="15"></div>
+            <label class="inline-check" for="trend-guard"><input id="trend-guard" type="checkbox" checked>开启趋势保护</label>
+          </div>
           <div class="quick-row">
             <button id="smart-btn" class="btn">自动参数</button>
             <button id="conservative-btn" class="btn">波动率自适应</button>
@@ -614,6 +629,12 @@
         <div class="monitor-metric"><span>预估保证金</span><strong id="risk-margin">--</strong></div>
         <div class="monitor-metric"><span>单格毛利</span><strong id="risk-rung">--</strong></div>
         <div class="monitor-metric"><span>单格间距</span><strong id="risk-spacing">--</strong></div>
+      </div>
+      <div class="strategy-monitor" aria-label="策略保护与统计周期">
+        <div class="strategy-monitor-item"><span>统计周期</span><strong id="measurement-cycle">--</strong></div>
+        <div class="strategy-monitor-item"><span>净方向敞口</span><strong id="directional-exposure">--</strong></div>
+        <div class="strategy-monitor-item"><span>趋势保护</span><strong id="trend-guard-state">--</strong></div>
+        <div class="strategy-monitor-item"><span>执行损耗</span><strong id="execution-costs">--</strong></div>
       </div>
       <div class="monitor-body">
         <div class="monitor-grid">
@@ -869,7 +890,7 @@
         state.mode = button.dataset.mode;
         document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
       });
-      ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action'].forEach((id) => {
+      ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action', 'max-directional-exposure', 'trend-guard'].forEach((id) => {
         $(id).addEventListener('input', () => {
           state.formDirty = true; state.chartManualRange = null; drawChart();
           if (consoleMode === 'paper') {
@@ -986,6 +1007,10 @@
       $('policy-maintenance-ratio').value = state.app.riskPolicy.minMaintenanceMarginRatio;
       $('policy-daily-loss').value = state.app.riskPolicy.dailyLossLimit;
       $('policy-drawdown').value = state.app.riskPolicy.maxDrawdownPct;
+      if (!state.formDirty && !state.bot?.config) {
+        $('max-directional-exposure').value = state.app.strategy?.maxDirectionalNotionalPct || 15;
+        $('trend-guard').checked = state.app.strategy?.trendGuardEnabled !== false;
+      }
       $('notify-state').textContent = state.app.notificationsEnabled ? '已配置' : '未配置';
       $('notify-test-btn').disabled = !state.app.notificationsEnabled;
       $('action-status').textContent = runtimeMatches
@@ -1119,6 +1144,8 @@
       if (Number(result.upper) > Number(result.lower)) $('upper').value = trimNumber(result.upper, 8);
       if (Number(result.gridCount) >= 2) $('grid-count').value = Math.min(100, Math.round(result.gridCount));
       if (Number(result.sizeBase) > 0) $('size-base').value = trimNumber(result.sizeBase, 8);
+      if (Number(result.maxDirectionalNotionalPct) > 0) $('max-directional-exposure').value = result.maxDirectionalNotionalPct;
+      if (typeof result.trendGuardEnabled === 'boolean') $('trend-guard').checked = result.trendGuardEnabled;
       $('action-status').textContent = '已采用 AI 建议参数，请人工核对后启动。';
       showToast('AI 参数已填入');
     }
@@ -1193,6 +1220,8 @@
           lower: Number(params.lower), upper: Number(params.upper), gridCount: Number(params.gridCount),
           sizeBase: Number(params.sizeBase), leverage: Number(params.leverage),
           outOfRangeAction: params.outOfRangeAction === 'recover' ? 'recover' : 'close',
+          maxDirectionalNotionalPct: Number(params.maxDirectionalNotionalPct) || Number($('max-directional-exposure').value) || 15,
+          trendGuardEnabled: params.trendGuardEnabled !== false,
         };
         await confirmAction('AI 建议按给定参数启动网格，确认执行？', '/api/start', body);
       }
@@ -1421,6 +1450,8 @@
         $('size-base').value = trimNumber(params.sizeBase, 8);
         $('leverage').value = params.leverage;
         $('oor-action').value = params.outOfRangeAction;
+        $('max-directional-exposure').value = params.maxDirectionalNotionalPct || state.app?.strategy?.maxDirectionalNotionalPct || 15;
+        $('trend-guard').checked = params.trendGuardEnabled !== false;
         $('action-status').textContent = params.rationale;
       } catch (error) {
         showToast(error.message, true);
@@ -1570,6 +1601,8 @@
         sizeBase: Number($('size-base').value),
         leverage: Number($('leverage').value),
         outOfRangeAction: $('oor-action').value,
+        maxDirectionalNotionalPct: Number($('max-directional-exposure').value),
+        trendGuardEnabled: $('trend-guard').checked,
       };
     }
 
@@ -1669,7 +1702,7 @@
       setSigned($('metric-realized'), bot.realizedPnl);
       setSigned($('metric-unrealized'), bot.unrealizedPnl);
       $('metric-unrealized-note').textContent = bot.position
-        ? `${bot.position.sizeBase > 0 ? '多头' : '空头'} ${format(Math.abs(bot.position.sizeBase), 6)} 币`
+        ? `当前持仓浮盈 ${signed(bot.position.unrealizedPnl, 2)} USDC`
         : `无持仓 · ${bot.openOrders ?? 0} 个挂单待成交`;
       $('metric-rungs').textContent = bot.stats?.completedRungs ?? 0;
       $('metric-volume').textContent = `成交额 ${money(bot.volume)}`;
@@ -1689,6 +1722,7 @@
       $('risk-margin').textContent = bot.risk ? `${money(bot.risk.requiredMargin)} USDC` : '--';
       $('risk-rung').textContent = bot.risk ? `${money(bot.risk.perRungProfit)} USDC` : '--';
       $('risk-spacing').textContent = bot.risk ? `${format(bot.risk.spacingPct, 3)}%` : '--';
+      renderStrategyMonitor(bot);
       $('risk-daily-loss').textContent = `${money(bot.liveRisk?.dailyLoss)} USDC`;
       $('risk-drawdown').textContent = `${format(bot.liveRisk?.drawdownPct, 2)}%`;
       $('risk-daily-loss').classList.toggle('negative', !!bot.liveRisk?.halted);
@@ -1744,6 +1778,10 @@
         dailyPnl: null,
         preflight: null,
         paperReadiness: null,
+        strategyGuard: null,
+        executionCosts: null,
+        measurement: null,
+        measurementHistory: [],
       };
     }
 
@@ -1757,6 +1795,41 @@
       $('size-base').value = config.sizeBase;
       $('leverage').value = config.leverage;
       $('oor-action').value = config.outOfRangeAction || 'close';
+      $('max-directional-exposure').value = config.maxDirectionalNotionalPct || state.app?.strategy?.maxDirectionalNotionalPct || 15;
+      $('trend-guard').checked = config.trendGuardEnabled !== false;
+    }
+
+    function renderStrategyMonitor(bot) {
+      const measurement = bot.measurement;
+      $('measurement-cycle').textContent = measurement
+        ? `#${measurement.sequence} · ${durationText(measurement.elapsedMs)}`
+        : '--';
+
+      const exposure = bot.strategyGuard?.exposure;
+      if (exposure) {
+        const side = exposure.side === 'long' ? '多' : exposure.side === 'short' ? '空' : '空仓';
+        $('directional-exposure').textContent = `${side} ${money(exposure.notional)} USDC · ${format(exposure.pct, 2)}% / ${format(exposure.capPct, 0)}%`;
+      } else {
+        $('directional-exposure').textContent = '--';
+      }
+
+      const guard = bot.strategyGuard;
+      if (!guard) {
+        $('trend-guard-state').textContent = '--';
+      } else if (!guard.enabled) {
+        $('trend-guard-state').textContent = '已关闭';
+      } else {
+        const trendName = ({ up: '上升', down: '下降', range: '震荡' })[guard.trend] || '未知';
+        const blocked = (guard.blockedOpeningSides || []).map((side) => side === 'buy' ? '暂停开多' : '暂停开空').join('、');
+        $('trend-guard-state').textContent = `${trendName} ${Math.round((guard.strength || 0) * 100)}%${blocked ? ` · ${blocked}` : ' · 双向可开'}`;
+      }
+
+      const costs = bot.executionCosts;
+      $('execution-costs').textContent = bot.mode === 'live'
+        ? '交易所未提供成本拆分'
+        : costs
+        ? `${signed(costs.total, 4)} USDC · 费 ${money(costs.fees)} / 滑 ${money(costs.slippage)} / 差 ${money(costs.spread)} / 资金 ${signed(costs.funding, 4)}`
+        : '--';
     }
 
     function renderLadder(bot) {
@@ -2037,6 +2110,15 @@
     function setBusyButton(button, busy, label) { button.disabled = busy; button.textContent = label; }
     function sourceName(source) { return source === 'real' ? '真实行情' : source === 'spot' ? '公共现货行情' : source === 'synthetic' ? '合成行情' : '正在连接'; }
     function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', recovery: '回收' })[mode] || mode; }
+    function durationText(ms) {
+      const seconds = Math.max(0, Math.floor(Number(ms) / 1000));
+      if (seconds < 60) return `${seconds} 秒`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes} 分钟`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours} 小时 ${minutes % 60} 分`;
+      return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+    }
     function snap(value, step) { return Math.round(value / step) * step; }
     function trimNumber(value, digits) { return Number(value.toFixed(digits)).toString(); }
     function format(value, digits = 2) { if (value == null || value === '') return '--'; const n = Number(value); return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '--'; }

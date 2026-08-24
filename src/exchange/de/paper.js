@@ -16,6 +16,7 @@ const FALLBACK_MARKETS = [
   { marketId: 2, name: 'ETH-USD', displayName: 'ETH-USD', symbol: 'ETH', lastPrice: 2600, stepSize: 0.0001, stepPrice: 0.01, maxLeverage: 50, minOrderSize: 0.001 },
 ];
 const INTERVALS = { 60: '1m', 300: '5m', 900: '15m', 1800: '30m', 3600: '1h', 7200: '2h', 14400: '4h', 86400: '1d' };
+const COINBASE_GRANULARITIES = new Set([60, 300, 900, 3600, 21600, 86400]);
 
 export class PaperExchange extends EventEmitter {
   constructor(opts = {}) {
@@ -36,11 +37,22 @@ export class PaperExchange extends EventEmitter {
     this.tickMs = opts.tickMs ?? 1000;
     this.pollMs = opts.pollMs ?? 5000;
     this.volPerTick = opts.volPerTick ?? 0.0015; // only for synthetic fallback
-    this.feeRate = Number(opts.feeRate) || 0.0005; // simulated fee rate per fill
+    this.feeRate = finiteNumber(opts.feeRate, 0.0005);
+    this.slippageBps = finiteNumber(opts.slippageBps, 2);
+    this.spreadBps = finiteNumber(opts.spreadBps, 1);
+    this.fundingRate = finiteNumber(opts.fundingRate, 0.0001);
+    this.fundingIntervalMs = finiteNumber(opts.fundingIntervalMs, 8 * 3_600_000);
+    this.fillDelayMs = finiteNumber(opts.fillDelayMs, 750);
+    this.partialFillProbability = finiteNumber(opts.partialFillProbability, 0.35);
+    this.partialFillRatio = finiteNumber(opts.partialFillRatio, 0.5);
+    this.random = typeof opts.random === 'function' ? opts.random : Math.random;
     this.markets = new Map();
     this.orders = new Map();
     this.positions = new Map();
     this.realizedPnl = 0;
+    this.executionCosts = emptyExecutionCosts();
+    this.lastFundingAt = Date.now();
+    this.candleDataSource = null;
     this.lastOkAt = Date.now();
     this.lastError = null;
     this.prices = new Map();      // displayed/simulated price
@@ -170,6 +182,7 @@ export class PaperExchange extends EventEmitter {
       }, 0),
       priceProbe: first ? this.prices.get(first.marketId) : null,
       lastOkAt: this.lastOkAt,
+      executionCosts: this.getExecutionCosts(),
     };
   }
 
@@ -187,10 +200,18 @@ export class PaperExchange extends EventEmitter {
           const data = (Array.isArray(j) ? j : []).map((c) => ({
             time: Number(c.t ?? c.T), open: +c.o, high: +c.h, low: +c.l, close: +c.c, volume: +(c.v ?? 0),
           })).filter((c) => Number.isFinite(c.close)).sort((a, b) => a.time - b.time);
-          if (data.length >= 20) return data;
+          if (data.length >= 20) { this.candleDataSource = 'real'; return data; }
         }
       } catch { /* fall through */ }
     }
+    if (m?.symbol) {
+      const publicCandles = await this._spotCandles(m.symbol, intervalSec, n);
+      if (publicCandles.length >= 20) {
+        this.candleDataSource = 'spot';
+        return publicCandles;
+      }
+    }
+    this.candleDataSource = 'synthetic';
     return synthCandles(this.prices.get(Number(marketId)) || 100, n);
   }
 
@@ -199,8 +220,12 @@ export class PaperExchange extends EventEmitter {
 
   async placeLimitOrder(o) {
     const id = `paper-${this._seq++}`;
-    this.orders.set(id, { orderId: id, ...o, marketId: Number(o.marketId) });
-    return { orderId: id };
+    const sizeBase = Number(o.sizeBase);
+    this.orders.set(id, {
+      orderId: id, ...o, marketId: Number(o.marketId), sizeBase,
+      remainingSize: sizeBase, fillEligibleAt: null,
+    });
+    return { orderId: id, price: Number(o.price), sizeBase };
   }
   async cancelOrder(_m, orderId) { this.orders.delete(orderId); return true; }
   async cancelAll(marketId) { for (const [id, o] of this.orders) if (o.marketId === Number(marketId)) this.orders.delete(id); return true; }
@@ -208,21 +233,33 @@ export class PaperExchange extends EventEmitter {
   async fetchOpenOrders(marketId) {
     return [...this.orders.values()]
       .filter((o) => Number(o.marketId) === Number(marketId))
-      .map((o) => ({ orderId: String(o.orderId), price: Number(o.price), side: o.side }));
+      .map((o) => ({
+        orderId: String(o.orderId), price: Number(o.price), side: o.side,
+        sizeBase: Number(o.sizeBase), remainingSize: Number(o.remainingSize ?? o.sizeBase),
+        reduceOnly: !!o.reduceOnly, clientOrderId: o.clientOrderId,
+      }));
   }
 
-  adoptOrder({ orderId, marketId, levelIndex, side, price, sizeBase, reduceOnly = false }) {
+  adoptOrder({ orderId, marketId, levelIndex, side, price, sizeBase, remainingSize, reduceOnly = false, clientOrderId }) {
     const id = String(orderId);
-    this.orders.set(id, { orderId: id, marketId: Number(marketId), levelIndex, side, price: Number(price), sizeBase: Number(sizeBase), reduceOnly: Boolean(reduceOnly) });
+    const size = Number(sizeBase);
+    this.orders.set(id, {
+      orderId: id, marketId: Number(marketId), levelIndex, side,
+      price: Number(price), sizeBase: size,
+      remainingSize: Number(remainingSize) > 0 ? Number(remainingSize) : size,
+      reduceOnly: Boolean(reduceOnly), clientOrderId, fillEligibleAt: null,
+    });
     const match = id.match(/^paper-(\d+)$/);
     if (match) this._seq = Math.max(this._seq, Number(match[1]) + 1);
   }
 
   exportState() {
     return {
-      version: 2,
+      version: 3,
       balance: this.balance,
       realizedPnl: this.realizedPnl,
+      executionCosts: this.getExecutionCosts(),
+      lastFundingAt: this.lastFundingAt,
       positions: [...this.positions.entries()],
       positionsByMarket: [...this.positions.entries()].map(([marketId, position]) => ({
         marketKey: this._marketKey(this.markets.get(Number(marketId))),
@@ -236,6 +273,8 @@ export class PaperExchange extends EventEmitter {
     if (!state || typeof state !== 'object') return false;
     if (Number.isFinite(Number(state.balance))) this.balance = Number(state.balance);
     if (Number.isFinite(Number(state.realizedPnl))) this.realizedPnl = Number(state.realizedPnl);
+    this.executionCosts = normalizeExecutionCosts(state.executionCosts);
+    if (Number.isFinite(Number(state.lastFundingAt))) this.lastFundingAt = Number(state.lastFundingAt);
     if (Array.isArray(state.positionsByMarket)) {
       const byKey = new Map([...this.markets.entries()].map(([marketId, market]) => [this._marketKey(market), marketId]));
       this.positions = new Map(state.positionsByMarket.flatMap((item) => {
@@ -272,6 +311,10 @@ export class PaperExchange extends EventEmitter {
   }
 
   async refreshPositions() { return [...this.positions.values()]; }
+
+  getExecutionCosts() {
+    return normalizeExecutionCosts(this.executionCosts);
+  }
 
   /** Close any open position at the current simulated price. */
   async closePosition(marketId) {
@@ -349,6 +392,49 @@ export class PaperExchange extends EventEmitter {
     return null;
   }
 
+  async _spotCandles(symbol, intervalSec, n) {
+    const upper = String(symbol).toUpperCase();
+    const limit = Math.min(300, Math.max(20, Number(n) || 200));
+    if (COINBASE_GRANULARITIES.has(Number(intervalSec))) {
+      try {
+        const end = new Date();
+        const start = new Date(end.getTime() - limit * Number(intervalSec) * 1000);
+        const query = new URLSearchParams({
+          granularity: String(intervalSec),
+          start: start.toISOString(),
+          end: end.toISOString(),
+        });
+        const res = await fetch(`https://api.exchange.coinbase.com/products/${upper}-USD/candles?${query}`, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const rows = await res.json();
+          const candles = (Array.isArray(rows) ? rows : []).map((row) => ({
+            time: Number(row[0]) * 1000,
+            low: Number(row[1]), high: Number(row[2]),
+            open: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) || 0,
+          })).filter(validCandle).sort((a, b) => a.time - b.time).slice(-limit);
+          if (candles.length >= 20) return candles;
+        }
+      } catch { /* try Binance */ }
+    }
+    try {
+      const interval = INTERVALS[intervalSec] || '1h';
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${upper}USDT&interval=${interval}&limit=${limit}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const rows = await res.json();
+        return (Array.isArray(rows) ? rows : []).map((row) => ({
+          time: Number(row[0]), open: Number(row[1]), high: Number(row[2]),
+          low: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) || 0,
+        })).filter(validCandle).sort((a, b) => a.time - b.time).slice(-limit);
+      }
+    } catch { /* no public candle feed reachable */ }
+    return [];
+  }
+
   // Price feed: Decibel first; if it stays unreachable (e.g. VPN dropped),
   // fall back to public spot prices so the simulated path keeps tracking the
   // real market instead of freezing at the last known target.
@@ -379,6 +465,7 @@ export class PaperExchange extends EventEmitter {
 
   _tick() {
     this.lastOkAt = Date.now();
+    this._applyFunding(this.lastOkAt);
     for (const [id, price] of this.prices) {
       let next;
       if (this.dataSource === 'real' || this.dataSource === 'spot') {
@@ -402,14 +489,42 @@ export class PaperExchange extends EventEmitter {
 
   _matchFills(marketId, prev, cur) {
     for (const o of [...this.orders.values()]) {
+      if (!this.orders.has(o.orderId)) continue;
       if (o.marketId !== marketId) continue;
       const crossedBuy = o.side === 'buy' && cur <= o.price;
       const crossedSell = o.side === 'sell' && cur >= o.price;
       if (!crossedBuy && !crossedSell) continue;
       if (o.reduceOnly && !this._reduces(marketId, o.side)) { this.orders.delete(o.orderId); continue; }
-      this.orders.delete(o.orderId);
-      this._applyFill(marketId, o.side, o.price, o.sizeBase);
-      this.emit('fill', { orderId: o.orderId, marketId, side: o.side, price: o.price, sizeBase: o.sizeBase, levelIndex: o.levelIndex, clientOrderId: o.clientOrderId });
+      const now = Date.now();
+      if (o.fillEligibleAt == null) o.fillEligibleAt = now + Math.max(0, this.fillDelayMs);
+      if (now < o.fillEligibleAt) continue;
+      const remainingBefore = Number(o.remainingSize ?? o.sizeBase);
+      let fillSize = remainingBefore;
+      if (remainingBefore > 0 && this.partialFillProbability > 0 && this.random() < this.partialFillProbability) {
+        const candidate = remainingBefore * this.partialFillRatio;
+        if (candidate > 1e-12 && remainingBefore - candidate > 1e-12) fillSize = candidate;
+      }
+      if (o.reduceOnly) {
+        const position = this.positions.get(marketId);
+        fillSize = Math.min(fillSize, Math.abs(Number(position?.sizeBase) || 0));
+      }
+      if (!(fillSize > 0)) { this.orders.delete(o.orderId); continue; }
+      const remainingSize = Math.max(0, remainingBefore - fillSize);
+      if (remainingSize <= 1e-12) this.orders.delete(o.orderId);
+      else {
+        o.remainingSize = remainingSize;
+        o.sizeBase = remainingSize;
+        o.fillEligibleAt = now + Math.max(0, this.fillDelayMs);
+      }
+      const costs = this._applyFill(marketId, o.side, o.price, fillSize);
+      this.emit('fill', {
+        orderId: o.orderId, marketId, side: o.side, price: o.price,
+        sizeBase: fillSize, remainingSize, partial: remainingSize > 0,
+        levelIndex: o.levelIndex, clientOrderId: o.clientOrderId, costs,
+      });
+      // Process at most one resting order per market tick. This gives inventory
+      // protection a chance to cancel newly-dangerous orders after a gap move.
+      break;
     }
   }
 
@@ -420,11 +535,19 @@ export class PaperExchange extends EventEmitter {
   }
 
   _applyFill(marketId, side, price, qty) {
-    // Simulate trading fees so paper results don't overstate real performance
-    // (the live fee-vs-spacing check reads this.feeRate too, keeping them consistent).
-    const fee = price * qty * this.feeRate;
-    this.balance -= fee;
-    this.realizedPnl -= fee;
+    const notional = price * qty;
+    const costs = {
+      fees: notional * this.feeRate,
+      slippage: notional * this.slippageBps / 10_000,
+      spread: notional * this.spreadBps / 10_000,
+      funding: 0,
+    };
+    const executionCost = costs.fees + costs.slippage + costs.spread;
+    this.balance -= executionCost;
+    this.realizedPnl -= executionCost;
+    this.executionCosts.fees += costs.fees;
+    this.executionCosts.slippage += costs.slippage;
+    this.executionCosts.spread += costs.spread;
     const p = this.positions.get(marketId) || { sizeBase: 0, entryPrice: 0 };
     const signed = side === 'buy' ? qty : -qty;
     if (p.sizeBase === 0 || Math.sign(p.sizeBase) === Math.sign(signed)) {
@@ -440,6 +563,25 @@ export class PaperExchange extends EventEmitter {
       else { p.sizeBase = remaining; p.entryPrice = price; }
     }
     this.positions.set(marketId, p);
+    return { ...costs, total: executionCost };
+  }
+
+  _applyFunding(now = Date.now()) {
+    if (!(this.fundingIntervalMs > 0) || !(this.fundingRate !== 0)) return;
+    if (!Number.isFinite(this.lastFundingAt)) this.lastFundingAt = now;
+    const periods = Math.floor((now - this.lastFundingAt) / this.fundingIntervalMs);
+    if (periods <= 0) return;
+    for (let period = 0; period < periods; period++) {
+      for (const [marketId, position] of this.positions) {
+        if (!position?.sizeBase) continue;
+        const price = this.prices.get(marketId) || position.entryPrice;
+        const payment = position.sizeBase * price * this.fundingRate;
+        this.balance -= payment;
+        this.realizedPnl -= payment;
+        this.executionCosts.funding += payment;
+      }
+    }
+    this.lastFundingAt += periods * this.fundingIntervalMs;
   }
 }
 
@@ -465,4 +607,31 @@ function normalizePosition(position) {
     sizeBase: Number(position?.sizeBase || 0),
     entryPrice: Number(position?.entryPrice || 0),
   };
+}
+
+function emptyExecutionCosts() {
+  return { fees: 0, slippage: 0, spread: 0, funding: 0, total: 0 };
+}
+
+function normalizeExecutionCosts(costs) {
+  const normalized = {
+    fees: Number(costs?.fees) || 0,
+    slippage: Number(costs?.slippage) || 0,
+    spread: Number(costs?.spread) || 0,
+    funding: Number(costs?.funding) || 0,
+  };
+  normalized.total = normalized.fees + normalized.slippage + normalized.spread + normalized.funding;
+  return Object.fromEntries(Object.entries(normalized).map(([key, value]) => [key, Math.round(value * 1e8) / 1e8]));
+}
+
+function finiteNumber(value, fallback) {
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function validCandle(candle) {
+  return Number.isFinite(candle.time) && candle.time > 0
+    && Number.isFinite(candle.open) && candle.open > 0
+    && Number.isFinite(candle.high) && candle.high > 0
+    && Number.isFinite(candle.low) && candle.low > 0
+    && Number.isFinite(candle.close) && candle.close > 0;
 }

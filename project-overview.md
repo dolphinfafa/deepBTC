@@ -9,7 +9,7 @@
 ```text
 public/index.html
         |
-src/server.js -- GridBot -- grid.js
+src/server.js -- GridBot -- grid.js / strategy-guards.js
         |             |
         |             +-- risk.js / persist.js / audit.js
         |
@@ -36,6 +36,10 @@ npm start
 - 总保证金占用不超过账户权益 20%-30%
 - 区间外执行停止、撤单、只减仓或平仓策略
 - 模拟盘可按 ATR 自动调区间；默认每小时检查，触发后至少冷却 4 小时
+- 单边净敞口默认不超过权益 15%，退出单使用 reduce-only
+- 趋势守卫每 5 分钟检查 BTC 1h K 线，只暂停强趋势中的危险开仓方向
+- 模拟盘计入手续费、滑点、点差、资金费率、成交延迟与部分成交
+- 每次启动和调区间建立独立统计周期，保留最近 12 个周期记录
 - 实盘必须通过 API 钱包、网络、Gas、账户权益和风险预检
 
 ## 敏感信息与运行状态
