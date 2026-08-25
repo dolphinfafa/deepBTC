@@ -11,6 +11,7 @@ import {
   directionalExposure,
   guardReasonText,
   inventoryOrderDecision,
+  isPassiveOpeningOrder,
 } from './strategy-guards.js';
 
 const RECONCILE_MS = 30000;   // periodic open-order reconciliation cadence
@@ -700,6 +701,11 @@ export class GridBot {
       if ([...this.active.values()].some((active) => active.levelIndex === levelIndex)) continue;
       const decision = this._orderDecision(order);
       if (!decision.allowed) continue;
+      if (decision.opening && !isPassiveOpeningOrder({
+        side: order.side,
+        price: order.price,
+        marketPrice: this.lastPrice,
+      })) continue;
       this._guardDeferred.delete(levelIndex);
       await this._place({
         ...order,

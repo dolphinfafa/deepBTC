@@ -105,6 +105,14 @@ export function inventoryOrderDecision({
   };
 }
 
+/** A resumed opening limit must still rest away from the market, not cross it. */
+export function isPassiveOpeningOrder({ side, price, marketPrice } = {}) {
+  const orderPrice = Number(price);
+  const mark = Number(marketPrice);
+  if (!(orderPrice > 0) || !(mark > 0)) return false;
+  return side === 'sell' ? orderPrice > mark : orderPrice < mark;
+}
+
 export function guardReasonText(reason) {
   return ({
     invalid_size: '下单数量无效',

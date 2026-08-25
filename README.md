@@ -88,6 +88,14 @@ TRADING_MODE=paper
 DECIBEL_API_KEY=你的_API_Key
 ```
 
+## BTC 回测
+
+运行 `npm run backtest:btc` 获取 Coinbase BTC-USD 1h 数据并执行默认 180 天回测。回测严格按时间顺序运行：趋势信号和新挂单只读取上一根已完成 K 线，当前 K 线只撮合此前已存在的订单。保护暂停的订单只有在条件解除且仍位于当前价被动一侧时才恢复，避免把已经穿价的旧订单当作正常限价单追价成交。
+
+可用环境变量做敏感性实验：`BACKTEST_DAYS`、`BACKTEST_FEE_RATE`、`BACKTEST_SLIPPAGE_BPS`、`BACKTEST_SPREAD_BPS`、`BACKTEST_FUNDING_8H_RATE`、`BACKTEST_MAX_DIRECTIONAL_NOTIONAL_PCT`、`BACKTEST_GRID_SIZE_MULTIPLIER`、`BACKTEST_GRID_COUNT_MULTIPLIER`、`BACKTEST_TREND_SLOPE_THRESHOLD`、`BACKTEST_TREND_GUARD_MIN_STRENGTH` 和 `BACKTEST_TREND_CONFIRM_BARS`。`BACKTEST_FLATTEN_ADVERSE_TREND=true` 与 `BACKTEST_REGIME_MODE_SWITCH=true` 是研究开关，不会改变正在运行的 PAPER/LIVE 策略。
+
+1h 数据无法可靠模拟 `750ms` 成交延迟和随机部分成交。回测结果用于成本敏感性、参数排除和不同时间窗口对照，不作为盈利或上线承诺。
+
 ## 实盘配置
 
 准备以下信息：

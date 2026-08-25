@@ -14,7 +14,7 @@ import { updateAiSettings, publicAiSettings, loadAiSettings } from '../src/ai/se
 import { EventEmitter } from 'node:events';
 import { decibelAuthHeaders } from '../src/exchange/de/auth.js';
 import { PaperExchange } from '../src/exchange/de/paper.js';
-import { directionalExposure, inventoryOrderDecision } from '../src/strategy-guards.js';
+import { directionalExposure, inventoryOrderDecision, isPassiveOpeningOrder } from '../src/strategy-guards.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,6 +132,42 @@ test('trend guard pauses only the dangerous opening direction', () => {
   };
   assert.equal(inventoryOrderDecision({ ...base, side: 'sell' }).reason, 'trend_up_blocks_short');
   assert.equal(inventoryOrderDecision({ ...base, side: 'buy' }).allowed, true);
+});
+
+test('guard resumes only opening limits that remain passive to the market', () => {
+  assert.equal(isPassiveOpeningOrder({ side: 'buy', price: 99, marketPrice: 100 }), true);
+  assert.equal(isPassiveOpeningOrder({ side: 'buy', price: 101, marketPrice: 100 }), false);
+  assert.equal(isPassiveOpeningOrder({ side: 'sell', price: 101, marketPrice: 100 }), true);
+  assert.equal(isPassiveOpeningOrder({ side: 'sell', price: 99, marketPrice: 100 }), false);
+});
+
+test('bot keeps a stale deferred opening order paused until it is passive again', async () => {
+  const exchange = fakeLiveExchange();
+  const bot = new GridBot(exchange);
+  bot.running = true;
+  bot.config = {
+    ...gridConfig(),
+    maxDirectionalNotionalPct: 15,
+    trendGuardEnabled: true,
+    trendGuardMinStrength: 0.55,
+  };
+  bot.lastPrice = 100;
+  bot._guardDeferred.set(3, {
+    levelIndex: 3,
+    side: 'sell',
+    price: 99,
+    sizeBase: 1,
+    opening: true,
+  });
+
+  await bot._enforceStrategyGuards();
+  assert.equal(exchange.placed, 0);
+  assert.equal(bot._guardDeferred.has(3), true);
+
+  bot.lastPrice = 98;
+  await bot._enforceStrategyGuards();
+  assert.equal(exchange.placed, 1);
+  assert.equal(bot._guardDeferred.has(3), false);
 });
 
 test('paper exchange exposes only the exact BTC-USD market', async () => {
