@@ -39,6 +39,23 @@ export class DailyPnlTracker {
     };
   }
 
+  rebaseline(equity, timezone, now = Date.now()) {
+    const value = Number(equity);
+    if (!Number.isFinite(value) || value <= 0) throw new Error('无法使用无效权益重置日报基线。');
+    const clock = zonedClock(now, timezone);
+    this.state = {
+      day: clock.day,
+      timezone,
+      baselineEquity: value,
+      latestEquity: value,
+      updatedAt: now,
+      lastSentKey: this.state.lastSentKey || null,
+      lastSentAt: this.state.lastSentAt || null,
+    };
+    this._save(now);
+    return this.summary(value, timezone, now);
+  }
+
   shouldSend(time, timezone, now = Date.now()) {
     const clock = zonedClock(now, timezone);
     const target = parseTime(time);

@@ -364,6 +364,23 @@ test('daily PnL tracks the selected timezone day and avoids duplicate sends', ()
   }
 });
 
+test('daily PnL rebaseline excludes a paper deposit from daily profit', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gridpilot-daily-rebaseline-'));
+  try {
+    const tracker = new DailyPnlTracker(dir);
+    const now = Date.UTC(2026, 7, 5, 12, 0, 0);
+    tracker.observe(1000, 'UTC', now);
+    tracker.markSent('11:00', 'UTC', now);
+    const summary = tracker.rebaseline(5000, 'UTC', now + 1000);
+    assert.equal(summary.baselineEquity, 5000);
+    assert.equal(summary.currentEquity, 5000);
+    assert.equal(summary.pnl, 0);
+    assert.equal(tracker.shouldSend('11:00', 'UTC', now + 2000), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('notification settings persist without exposing the Telegram token', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gridpilot-notify-'));
   try {
@@ -446,6 +463,67 @@ test('paper exchange restores account state and advances adopted order ids', asy
   assert.equal(restored.balance, first.balance);
   assert.equal(restored.realizedPnl, first.realizedPnl);
   assert.equal(placed.orderId, 'paper-81');
+});
+
+test('paper equity adjustment requires an empty account and valid amount', async () => {
+  const exchange = new PaperExchange({ startBalance: 10000 });
+  assert.throws(() => exchange.setAccountEquity(0), /1-100,000,000/);
+  assert.throws(() => exchange.setAccountEquity(Number.NaN), /1-100,000,000/);
+
+  const order = await exchange.placeLimitOrder({ marketId: 1, side: 'buy', price: 100, sizeBase: 1 });
+  assert.throws(() => exchange.setAccountEquity(20000), /仍有模拟挂单/);
+  await exchange.cancelOrder(1, order.orderId);
+
+  exchange.positions.set(1, { sizeBase: 1, entryPrice: 100 });
+  assert.throws(() => exchange.setAccountEquity(20000), /仍有模拟持仓/);
+  exchange.positions.set(1, { sizeBase: 0, entryPrice: 0 });
+
+  const result = exchange.setAccountEquity(20000.129);
+  assert.equal(result.previousEquity, 10000);
+  assert.equal(result.equity, 20000.13);
+  assert.equal(exchange.balance, 20000.13);
+});
+
+test('paper equity adjustment starts a clean strategy measurement', () => {
+  const exchange = new PaperExchange({
+    startBalance: 10000,
+    feeRate: 0.001,
+    slippageBps: 0,
+    spreadBps: 0,
+    fundingRate: 0,
+  });
+  exchange.markets.set(1, { marketId: 1, displayName: 'BTC-USD' });
+  exchange.prices.set(1, 100);
+  let persisted = null;
+  const bot = new GridBot(exchange, { onChange: (snapshot) => { persisted = snapshot; } });
+  bot.restore({ config: gridConfig() });
+  bot.resetStats();
+  exchange._applyFill(1, 'buy', 100, 1);
+  exchange._applyFill(1, 'sell', 100, 1);
+  assert.equal(bot.getState().totalPnl, -0.2);
+
+  const state = bot.setPaperEquity(20000);
+  assert.equal(state.equity, 20000);
+  assert.equal(state.totalPnl, 0);
+  assert.equal(state.returnPct, 0);
+  assert.equal(state.measurement.reason, 'paper_equity_adjustment');
+  assert.equal(state.measurement.baselineEquity, 20000);
+  assert.equal(state.measurementHistory[0].results.totalPnl, -0.2);
+  assert.equal(exchange.realizedPnl, -0.2);
+  assert.equal(persisted.exchangeState.balance, 20000);
+});
+
+test('bot rejects paper equity adjustment while trading or in live mode', () => {
+  const paper = new PaperExchange({ startBalance: 10000 });
+  const bot = new GridBot(paper);
+  bot.running = true;
+  assert.throws(() => bot.setPaperEquity(20000), /网格运行中/);
+  bot.running = false;
+  bot.recovery = true;
+  assert.throws(() => bot.setPaperEquity(20000), /恢复流程进行中/);
+
+  const liveBot = new GridBot(fakeLiveExchange());
+  assert.throws(() => liveBot.setPaperEquity(20000), /只有 PAPER/);
 });
 
 test('paper exchange reports fees, slippage, spread and funding separately', () => {

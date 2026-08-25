@@ -93,6 +93,7 @@ const server = http.createServer(async (request, response) => {
     '/stop': '/api/stop',
     '/adjust': '/api/adjust',
     '/reset': '/api/reset',
+    '/paper-equity': '/api/paper-equity',
     '/cancel-orders': '/api/cancel-orders',
     '/start-recovery': '/api/start-recovery',
     '/close-position': '/api/close-position',
@@ -365,6 +366,25 @@ const server = http.createServer(async (request, response) => {
       return runAction(response, () => {
         const result = bot.resetStats();
         audit.write('stats_reset', { state: compactState(result) });
+        return publicState();
+      }, url.pathname);
+    }
+    if (url.pathname === '/api/paper-equity' && request.method === 'POST') {
+      return runAction(response, async () => {
+        if (cfg.decibel.mode !== 'paper') throw new Error('账户权益调整仅适用于 PAPER 模拟盘。');
+        const body = await readBody(request);
+        await exchange.refreshPositions?.();
+        const previousEquity = bot.getState().equity;
+        const result = bot.setPaperEquity(body.equity);
+        const dailySummary = dailyPnl.rebaseline(result.equity, notifier.publicSettings().timezone);
+        await refreshPaperReadiness();
+        audit.write('paper_equity_adjusted', {
+          previousEquity,
+          equity: result.equity,
+          delta: Number(result.equity) - Number(previousEquity),
+          measurementId: result.measurement?.id || null,
+          dailySummary,
+        }, 'warn');
         return publicState();
       }, url.pathname);
     }

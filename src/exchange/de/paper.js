@@ -316,6 +316,25 @@ export class PaperExchange extends EventEmitter {
     return normalizeExecutionCosts(this.executionCosts);
   }
 
+  /** Treat a stopped, empty PAPER account change as a deposit/withdrawal. */
+  setAccountEquity(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount < 1 || amount > 100_000_000) {
+      throw new Error('模拟账户权益必须在 1-100,000,000 USDC 之间。');
+    }
+    if (this.orders.size > 0) throw new Error('仍有模拟挂单，不能调整账户权益。');
+    if ([...this.positions.values()].some((position) => Math.abs(Number(position?.sizeBase) || 0) > 1e-12)) {
+      throw new Error('仍有模拟持仓，不能调整账户权益。');
+    }
+    const previousEquity = this.balance;
+    this.balance = Math.round(amount * 100) / 100;
+    return {
+      previousEquity,
+      equity: this.balance,
+      delta: this.balance - previousEquity,
+    };
+  }
+
   /** Close any open position at the current simulated price. */
   async closePosition(marketId) {
     const id = Number(marketId);

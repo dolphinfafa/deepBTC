@@ -97,6 +97,11 @@
     .metric span { color: var(--muted); font-size: 11px; font-weight: 750; }
     .metric strong { display: block; margin-top: 10px; font-size: 21px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .metric small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .paper-equity-control { display: grid; grid-template-columns: minmax(0,1fr) minmax(150px,190px) auto; gap: 10px; align-items: center; margin: -4px 0 18px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+    .paper-equity-copy strong { display: block; font-size: 11px; }
+    .paper-equity-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .paper-equity-control input { min-width: 0; height: 38px; box-sizing: border-box; }
+    .paper-equity-control .btn { min-height: 38px; }
     .positive { color: var(--green) !important; }
     .negative { color: var(--coral) !important; }
     .exchange-overview-actions { display: flex; gap: 8px; justify-content: flex-start; margin: 0 0 18px; }
@@ -273,6 +278,9 @@
       .market-head { grid-template-columns: 1fr; align-items: start; }
       .market-picker select { min-width: 0; }
       .metrics { grid-template-columns: repeat(2,1fr); }
+      .paper-equity-control { grid-template-columns: 1fr; }
+      .paper-equity-copy { grid-column: auto; }
+      .paper-equity-control .btn { width: 100%; }
       .metric { min-height: 92px; padding: 13px; }
       .metric strong { font-size: 17px; }
       .chart-wrap { min-height: 250px; }
@@ -504,6 +512,12 @@
       <div class="metric"><span>完成格数</span><strong id="metric-rungs">0</strong><small id="metric-volume">成交额 --</small></div>
       <div class="metric"><span>挂单</span><strong id="metric-orders">0</strong><small id="metric-order-sync">交易所 --</small></div>
     </section>
+
+    <div class="paper-equity-control paper-page-only" aria-label="模拟账户权益调整">
+      <div class="paper-equity-copy"><strong>模拟账户权益</strong><span id="paper-equity-status">正在检查账户状态</span></div>
+      <input id="paper-equity-input" type="number" min="1" max="100000000" step="0.01" inputmode="decimal" aria-label="新的模拟账户权益（USDC）" disabled>
+      <button id="paper-equity-btn" class="btn" data-runtime-action disabled>设置权益</button>
+    </div>
 
     <div class="exchange-overview-actions" aria-label="快捷入口">
       <a class="btn small" href="#decibel-panel">进入交易台 →</a>
@@ -782,7 +796,7 @@
     const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
     let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
     let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, paperEquityDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
 
     function consolePageUrl(mode) {
       const url = new URL(location.href);
@@ -929,6 +943,8 @@
       $('cancel-btn').addEventListener('click', () => confirmAction('撤销全部挂单并停止网格？当前持仓会保留。', '/api/cancel-orders'));
       $('stop-btn').addEventListener('click', () => confirmAction('停止网格、撤销挂单并平仓？', '/api/stop', { closePosition: true }));
       $('reset-btn').addEventListener('click', () => confirmAction('重置盈亏、成交额和完成格数统计？', '/api/reset'));
+      $('paper-equity-input').addEventListener('input', () => { state.paperEquityDirty = true; });
+      $('paper-equity-btn').addEventListener('click', setPaperEquity);
       $('reconnect-btn').addEventListener('click', () => action('/api/reconnect', {}));
       $('preflight-btn').addEventListener('click', runPreflight);
       $('notify-test-btn').addEventListener('click', testNotification);
@@ -1591,6 +1607,32 @@
       await action('/api/adjust', { lower: Number($('lower').value), upper: Number($('upper').value) });
     }
 
+    async function setPaperEquity() {
+      const reason = paperEquityBlockReason(state.bot);
+      if (reason) return showToast(reason, true);
+      const equity = Number($('paper-equity-input').value);
+      if (!Number.isFinite(equity) || equity < 1 || equity > 100000000) {
+        return showToast('模拟账户权益必须在 1-100,000,000 USDC 之间。', true);
+      }
+      const previous = Number(state.bot?.equity);
+      if (!(await confirmDialog(`将模拟账户权益从 ${money(previous)} 调整为 ${money(equity)} USDC，并从新权益开始统计盈亏？`))) return;
+      state.busy = true;
+      renderActionAvailability(state.bot);
+      try {
+        const result = await request('/api/paper-equity', { method: 'POST', body: JSON.stringify({ equity }) });
+        state.bot = result;
+        state.paperEquityDirty = false;
+        renderState(result);
+        await loadPaperReadiness();
+        showToast(`模拟账户权益已调整为 ${money(result.equity)} USDC`);
+      } catch (error) {
+        showToast(error.message, true);
+      } finally {
+        state.busy = false;
+        renderActionAvailability(state.bot);
+      }
+    }
+
     function formBody() {
       return {
         marketId: Number(state.market.marketId),
@@ -1637,7 +1679,7 @@
 
     async function action(path, body) {
       if (state.busy) return;
-      const runtimePaths = new Set(['/api/start', '/api/stop', '/api/adjust', '/api/reset', '/api/cancel-orders', '/api/close-position', '/api/start-recovery', '/api/emergency-stop']);
+      const runtimePaths = new Set(['/api/start', '/api/stop', '/api/adjust', '/api/reset', '/api/paper-equity', '/api/cancel-orders', '/api/close-position', '/api/start-recovery', '/api/emergency-stop']);
       if (runtimePaths.has(path) && !runtimeMatchesConsole()) {
         showToast('页面与服务模式不一致，交易操作已锁定。', true);
         return;
@@ -1697,6 +1739,7 @@
       const health = bot.health || {};
       $('health-text').textContent = health.reason || (bot.running ? '运行中' : '未运行');
       $('metric-equity').textContent = money(bot.equity);
+      if (!state.paperEquityDirty && Number(bot.equity) > 0) $('paper-equity-input').value = Number(bot.equity).toFixed(2);
       setSigned($('metric-pnl'), bot.totalPnl);
       $('metric-return').textContent = `收益率 ${signed(bot.returnPct, 2)}%`;
       setSigned($('metric-realized'), bot.realizedPnl);
@@ -2096,10 +2139,24 @@
       else renderActionAvailability(state.bot);
     }
     function runtimeMatchesConsole() { return !state.app || state.app.mode === consoleMode; }
+    function paperEquityBlockReason(bot) {
+      if (consoleMode !== 'paper' || state.app?.mode !== 'paper' || bot?.runtimeAvailable === false) return '仅当前 PAPER 模拟盘可以调整账户权益。';
+      if (!bot) return '正在读取模拟账户状态。';
+      if (bot?.running) return '网格运行中，不能调整模拟账户权益。';
+      if (bot?.recovery) return '恢复流程进行中，不能调整模拟账户权益。';
+      if (bot?.position) return '仍有模拟持仓，不能调整账户权益。';
+      if (bot?.paperReadiness?.noOrphanState === false) return '检测到遗留挂单或恢复状态，不能调整账户权益。';
+      if (Number(bot?.openOrders || 0) > 0 || Number(bot?.exchangeOpenOrders || 0) > 0) return '仍有模拟挂单，不能调整账户权益。';
+      return '';
+    }
     function renderActionAvailability(bot) {
       const blocked = !runtimeMatchesConsole();
       document.querySelectorAll('[data-runtime-action]').forEach((button) => { button.disabled = state.busy || blocked; });
       $('preflight-btn').disabled = blocked;
+      const equityReason = paperEquityBlockReason(bot);
+      $('paper-equity-input').disabled = state.busy || !!equityReason;
+      $('paper-equity-btn').disabled = state.busy || !!equityReason;
+      $('paper-equity-status').textContent = equityReason || '账户空闲，可作为入金或出金调整';
       if (!bot) return;
       $('start-btn').disabled = state.busy || blocked || !!bot.running;
       $('adjust-btn').disabled = state.busy || blocked || !bot.running;

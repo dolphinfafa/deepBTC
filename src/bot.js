@@ -496,6 +496,31 @@ export class GridBot {
     return this.getState();
   }
 
+  /** Adjust an idle PAPER account without counting the cash flow as strategy PnL. */
+  setPaperEquity(amount) {
+    if (this.ex.mode !== 'paper') throw new Error('只有 PAPER 模拟盘可以调整账户权益。');
+    if (this.running) throw new Error('网格运行中不能调整模拟账户权益。');
+    if (this.recovery) throw new Error('恢复流程进行中不能调整模拟账户权益。');
+    if (this.active.size > 0) throw new Error('仍有机器人挂单，不能调整模拟账户权益。');
+    if (typeof this.ex.setAccountEquity !== 'function') throw new Error('当前模拟交易所不支持调整账户权益。');
+
+    const completedMeasurement = this.measurement ? {
+      ...this.measurement,
+      endedAt: Date.now(),
+      results: this._measurementResults(),
+    } : null;
+    const adjustment = this.ex.setAccountEquity(amount);
+    if (completedMeasurement) {
+      this.measurementHistory.unshift(completedMeasurement);
+      if (this.measurementHistory.length > 12) this.measurementHistory.length = 12;
+    }
+    this.measurement = null;
+    this._beginMeasurement('paper_equity_adjustment');
+    this._alert(`模拟账户权益已由 ${round2(adjustment.previousEquity)} 调整为 ${round2(adjustment.equity)} USDC，策略盈亏已重新设为零基线。`);
+    this._changed();
+    return this.getState();
+  }
+
   _restoreMeasurement(snap) {
     this._unrealizedBase = Number(snap.unrealizedBase) || 0;
     this._costBase = normalizeCosts(snap.costBase);
