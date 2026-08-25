@@ -796,7 +796,7 @@
     const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
     let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
     let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, paperEquityDirty: false, busy: false, confirmResolver: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualLeverage: false, paperEquityDirty: false, busy: false, confirmResolver: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
 
     function consolePageUrl(mode) {
       const url = new URL(location.href);
@@ -906,6 +906,7 @@
       });
       ['lower', 'upper', 'grid-count', 'size-base', 'leverage', 'oor-action', 'max-directional-exposure', 'trend-guard'].forEach((id) => {
         $(id).addEventListener('input', () => {
+          if (id === 'leverage') state.manualLeverage = true;
           state.formDirty = true; state.chartManualRange = null; drawChart();
           if (consoleMode === 'paper') {
             window.clearTimeout(state.readinessTimer);
@@ -1455,6 +1456,7 @@
       const price = Number(state.analysis?.price || state.bot?.lastPrice || state.market?.lastPrice);
       if (!(price > 0)) return showToast('当前没有有效价格。', true);
       try {
+        const manualLeverage = state.manualLeverage ? Number($('leverage').value) : null;
         const result = await request(`/api/strategy-suggestion?marketId=${state.market.marketId}`);
         const params = result.suggestion;
         state.formDirty = true;
@@ -1464,11 +1466,13 @@
         $('upper').value = trimNumber(params.upper, 8);
         $('grid-count').value = params.gridCount;
         $('size-base').value = trimNumber(params.sizeBase, 8);
-        $('leverage').value = params.leverage;
+        $('leverage').value = manualLeverage > 0 ? manualLeverage : params.leverage;
         $('oor-action').value = params.outOfRangeAction;
         $('max-directional-exposure').value = params.maxDirectionalNotionalPct || state.app?.strategy?.maxDirectionalNotionalPct || 15;
         $('trend-guard').checked = params.trendGuardEnabled !== false;
-        $('action-status').textContent = params.rationale;
+        $('action-status').textContent = manualLeverage > 0
+          ? `${params.rationale} · 已保留人工杠杆 ${manualLeverage}x`
+          : params.rationale;
       } catch (error) {
         showToast(error.message, true);
       }
@@ -1492,7 +1496,7 @@
         const phrase = await phraseDialog(`实盘将发送真实订单。请输入 ${command} ${state.market.displayName} 继续：`);
         if (phrase == null) return;
         body.liveConfirmation = phrase.trim();
-      } else if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启动'} ${body.gridCount} 格模拟网格？`))) return;
+      } else if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启动'} ${body.gridCount} 格模拟网格，杠杆 ${body.leverage}x？`))) return;
       await action('/api/start', body);
     }
 
@@ -1703,31 +1707,61 @@
     function connectStream() {
       const stream = new EventSource(apiUrl(`/api/stream?console=${consoleMode}`));
       stream.onopen = () => {
-        $('connection-pill').textContent = '实时连接';
-        $('connection-pill').classList.add('connected');
-        setRuntimeNode($('runtime-connection'), '连接: 正常', 'ok');
+        markStreamConnected();
       };
       stream.onmessage = (event) => {
         try {
-          state.bot = JSON.parse(event.data);
-          renderState(state.bot);
-          const value = Number(state.bot.lastPrice);
-          if (value > 0) {
-            const point = { time: Date.now(), value };
-            state.prices.push(point);
-            state.livePrices.push(point);
-            updateChartCandle(value, point.time);
-            if (state.prices.length > 180) state.prices.shift();
-            if (state.livePrices.length > 120) state.livePrices.shift();
-            drawChart();
-          }
+          markStreamConnected();
+          applyRuntimeUpdate(JSON.parse(event.data));
         } catch { /* wait for the next event */ }
       };
       stream.onerror = () => {
+        state.streamOpen = false;
         $('connection-pill').textContent = '正在重连';
         $('connection-pill').classList.remove('connected');
         setRuntimeNode($('runtime-connection'), '连接: 重连中', 'warn');
+        scheduleStreamFallback();
       };
+    }
+
+    function markStreamConnected() {
+      state.streamOpen = true;
+      window.clearTimeout(state.streamFallbackTimer);
+      state.streamFallbackTimer = null;
+      $('connection-pill').textContent = '实时连接';
+      $('connection-pill').classList.add('connected');
+      setRuntimeNode($('runtime-connection'), '连接: 正常', 'ok');
+    }
+
+    function scheduleStreamFallback() {
+      if (state.streamFallbackTimer) return;
+      state.streamFallbackTimer = window.setTimeout(pollStreamFallback, 1500);
+    }
+
+    async function pollStreamFallback() {
+      state.streamFallbackTimer = null;
+      if (state.streamOpen) return;
+      try {
+        applyRuntimeUpdate(await request(`/api/state?console=${consoleMode}`));
+        $('connection-pill').textContent = '轮询连接';
+        $('connection-pill').classList.add('connected');
+        setRuntimeNode($('runtime-connection'), '连接: 轮询正常', 'warn');
+      } catch { /* keep the reconnect state and retry */ }
+      if (!state.streamOpen) state.streamFallbackTimer = window.setTimeout(pollStreamFallback, 3000);
+    }
+
+    function applyRuntimeUpdate(runtimeState) {
+      state.bot = runtimeState;
+      renderState(runtimeState);
+      const value = Number(runtimeState.lastPrice);
+      if (!(value > 0)) return;
+      const point = { time: Date.now(), value };
+      state.prices.push(point);
+      state.livePrices.push(point);
+      updateChartCandle(value, point.time);
+      if (state.prices.length > 180) state.prices.shift();
+      if (state.livePrices.length > 120) state.livePrices.shift();
+      drawChart();
     }
 
     function renderState(runtimeBot) {
@@ -1830,6 +1864,7 @@
 
     function syncForm(config) {
       state.formDirty = false;
+      state.manualLeverage = false;
       state.mode = config.mode || state.mode;
       document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
       $('lower').value = config.lower;
