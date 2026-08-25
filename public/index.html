@@ -796,7 +796,7 @@
     const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
     let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
     let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualLeverage: false, paperEquityDirty: false, busy: false, confirmResolver: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualLeverage: false, paperEquityDirty: false, busy: false, confirmResolver: null, stream: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
 
     function consolePageUrl(mode) {
       const url = new URL(location.href);
@@ -998,7 +998,7 @@
       $('mode-pill').textContent = state.app.mode.toUpperCase();
       $('mode-pill').className = `pill ${state.app.mode}`;
       setRuntimeNode($('runtime-exchange'), `DE: ${state.app.mode.toUpperCase()}`, state.app.mode === 'live' ? 'error' : 'warn');
-      setRuntimeNode($('runtime-connection'), '连接: 初始化', 'warn');
+      setRuntimeNode($('runtime-connection'), state.streamOpen ? '连接: 正常' : '连接: 初始化', state.streamOpen ? 'ok' : 'warn');
       setRuntimeNode($('runtime-risk'), state.app.mode === 'live' ? '风控: 待预检' : '风控: PAPER', state.app.mode === 'live' ? 'warn' : 'ok');
       const network = state.app.network.toUpperCase();
       const dataNetwork = String(state.app.dataNetwork || '').toUpperCase();
@@ -1288,6 +1288,7 @@
         showToast('模拟盘已重启，正在刷新状态…');
         setBusyButton($('connection-restart-btn'), false, '重启模拟盘');
         await refreshAll();
+        connectStream();
       } catch (error) {
         showToast(error.message, true);
         setBusyButton($('connection-restart-btn'), false, '重启模拟盘');
@@ -1705,17 +1706,33 @@
     }
 
     function connectStream() {
-      const stream = new EventSource(apiUrl(`/api/stream?console=${consoleMode}`));
+      state.stream?.close();
+      state.stream = null;
+      state.streamOpen = false;
+      window.clearTimeout(state.streamFallbackTimer);
+      state.streamFallbackTimer = null;
+      setRuntimeNode($('runtime-connection'), '连接: 初始化', 'warn');
+      let stream;
+      try {
+        stream = new EventSource(apiUrl(`/api/stream?console=${consoleMode}`));
+        state.stream = stream;
+      } catch {
+        scheduleStreamFallback();
+        return;
+      }
       stream.onopen = () => {
+        if (state.stream !== stream) return;
         markStreamConnected();
       };
       stream.onmessage = (event) => {
+        if (state.stream !== stream) return;
         try {
           markStreamConnected();
           applyRuntimeUpdate(JSON.parse(event.data));
         } catch { /* wait for the next event */ }
       };
       stream.onerror = () => {
+        if (state.stream !== stream) return;
         state.streamOpen = false;
         $('connection-pill').textContent = '正在重连';
         $('connection-pill').classList.remove('connected');
