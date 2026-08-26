@@ -734,6 +734,13 @@
           <div class="field"><label for="ai-report-hour">AI 复盘小时</label><input id="ai-report-hour" type="number" min="-1" max="23" value="20"></div>
           <div class="field settings-span-2"><label for="ai-api-key">API Key <small id="ai-key-state">未配置</small></label><input id="ai-api-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
         </div>
+        <div class="settings-grid paper-page-only" style="margin-top:12px">
+          <label class="inline-check" for="ai-autopilot-enabled"><input id="ai-autopilot-enabled" type="checkbox">开启 AI 自动策略</label>
+          <div class="field"><label for="ai-autopilot-confidence">最低置信度</label><input id="ai-autopilot-confidence" type="number" min="0.5" max="0.95" step="0.05" value="0.75"></div>
+          <div class="field"><label for="ai-autopilot-confirmations">连续确认次数</label><input id="ai-autopilot-confirmations" type="number" min="2" max="6" step="1" value="2"></div>
+          <div class="field"><label for="ai-autopilot-cooldown">切换冷却 <small>分钟</small></label><input id="ai-autopilot-cooldown" type="number" min="60" max="1440" step="30" value="240"></div>
+        </div>
+        <div id="ai-autopilot-status" class="status-box paper-page-only">AI 自动策略已关闭</div>
         <div class="settings-actions">
           <button id="ai-save-btn" class="btn primary">保存 AI 设置</button>
           <button id="ai-test-btn" class="btn">测试连接</button>
@@ -747,7 +754,7 @@
           <div class="field settings-span-2"><label for="ai-question">向助手提问</label><input id="ai-question" type="text" placeholder="例如：当前网格有哪些风险？"></div>
         </div>
         <div class="settings-actions"><button id="ai-chat-btn" class="btn">发送问题</button><button id="ai-apply-action-btn" class="btn primary" hidden>确认执行建议</button></div>
-        <div id="ai-answer" class="status-box">AI 只提供分析建议，不会自动执行交易。</div>
+        <div id="ai-answer" class="status-box">聊天建议需人工确认；PAPER 自动策略按独立开关与风控规则执行。</div>
       </div>
     </details>
   </main>
@@ -1006,7 +1013,7 @@
       const dataNetwork = String(state.app.dataNetwork || '').toUpperCase();
       $('network-pill').textContent = dataNetwork && dataNetwork !== network ? `${network} · 数据 ${dataNetwork}` : network;
       const ai = state.app.ai || {};
-      $('ai-pill').textContent = ai.configured ? `AI ${ai.provider.toUpperCase()}` : 'AI 未配置';
+      $('ai-pill').textContent = ai.configured ? (ai.autopilotEnabled && consoleMode === 'paper' ? 'AI AUTO' : `AI ${ai.provider.toUpperCase()}`) : 'AI 未配置';
       $('ai-pill').className = `pill ${ai.configured ? 'connected' : ''}`;
       $('mode-banner-title').textContent = consoleMode === 'live' ? '实盘交易台 · LIVE' : '模拟盘工作台 · PAPER';
       $('mode-banner-detail').textContent = consoleMode === 'live'
@@ -1096,17 +1103,33 @@
       $('ai-sentinel-minutes').value = settings.sentinelMinutes ?? config.sentinelMinutes ?? 5;
       $('ai-market-minutes').value = settings.marketMinutes ?? config.marketMinutes ?? 30;
       $('ai-report-hour').value = settings.reportHour ?? config.reportHour ?? 20;
+      $('ai-autopilot-enabled').checked = config.autopilotEnabled ?? settings.autopilotEnabled ?? false;
+      $('ai-autopilot-confidence').value = config.autopilotMinConfidence ?? settings.autopilotMinConfidence ?? 0.75;
+      $('ai-autopilot-confirmations').value = config.autopilotConfirmations ?? settings.autopilotConfirmations ?? 2;
+      $('ai-autopilot-cooldown').value = config.autopilotCooldownMinutes ?? settings.autopilotCooldownMinutes ?? 240;
+      const autopilotBackendReady = config.autopilotEnabled !== undefined;
+      $('ai-autopilot-enabled').disabled = !autopilotBackendReady;
+      $('ai-autopilot-confidence').disabled = !autopilotBackendReady;
+      $('ai-autopilot-confirmations').disabled = !autopilotBackendReady;
+      $('ai-autopilot-cooldown').disabled = !autopilotBackendReady;
       $('ai-key-state').textContent = settings.hasApiKey || config.configured ? '已配置' : '未配置';
-      $('ai-settings-badge').textContent = config.configured ? '已配置' : '未配置';
+      $('ai-settings-badge').textContent = config.configured ? (config.autopilotEnabled && consoleMode === 'paper' ? '自动策略' : '已配置') : '未配置';
       $('ai-settings-badge').className = `pill push ${config.configured ? 'paper' : ''}`;
       $('ai-analyze-btn').disabled = !config.configured;
       $('ai-chat-btn').disabled = !config.configured;
       $('ai-test-btn').disabled = !config.configured;
       $('ai-sentinel-btn').disabled = !config.configured;
       $('ai-report-btn').disabled = !config.configured;
+      renderAiAutopilot(autopilotBackendReady
+        ? (result?.autopilot || state.bot?.aiAutopilot)
+        : { enabled: false, effective: false, message: '服务待重启，重启后可配置 AI 自动策略' });
     }
 
     async function saveAiSettings() {
+      const enableAutopilot = $('ai-autopilot-enabled').checked;
+      const wasEnabled = state.ai?.config?.autopilotEnabled ?? state.ai?.settings?.autopilotEnabled ?? false;
+      if (enableAutopilot && state.ai?.config?.autopilotEnabled === undefined) return showToast('服务待重启，当前不能启用 AI 自动策略。', true);
+      if (enableAutopilot && !wasEnabled && !(await confirmDialog('启用后，AI 可在 PAPER 模拟盘自动启动、撤单平仓和切换中性/做多/做空网格。确认启用？'))) return;
       setBusyButton($('ai-save-btn'), true, '保存中');
       try {
         const result = await request('/api/ai-config', {
@@ -1119,6 +1142,10 @@
             sentinelMinutes: Number($('ai-sentinel-minutes').value),
             marketMinutes: Number($('ai-market-minutes').value),
             reportHour: Number($('ai-report-hour').value),
+            autopilotEnabled: enableAutopilot,
+            autopilotMinConfidence: Number($('ai-autopilot-confidence').value),
+            autopilotConfirmations: Number($('ai-autopilot-confirmations').value),
+            autopilotCooldownMinutes: Number($('ai-autopilot-cooldown').value),
             apiKey: $('ai-api-key').value.trim(),
           }),
         });
@@ -1804,6 +1831,7 @@
       if (!runtimeBot) return;
       const bot = runtimeMatchesConsole() ? runtimeBot : inactiveConsoleState(runtimeBot);
       if (bot.paperReadiness) renderPaperReadiness(bot.paperReadiness);
+      renderAiAutopilot(bot.aiAutopilot);
       const price = Number(bot.lastPrice || state.market?.lastPrice);
       $('last-price').textContent = price > 0 ? `${money(price)} USDC` : '--';
       const health = bot.health || {};
@@ -1859,6 +1887,28 @@
       renderModeGuard();
     }
 
+    function renderAiAutopilot(status) {
+      const element = $('ai-autopilot-status');
+      if (!element) return;
+      if (state.ai?.config?.autopilotEnabled === undefined) {
+        element.textContent = '服务待重启，重启后可配置 AI 自动策略';
+        return;
+      }
+      if (!status) {
+        element.textContent = consoleMode === 'live' ? '实盘禁止 AI 自动切换策略' : '正在读取 AI 自动策略状态';
+        return;
+      }
+      const parts = [status.message || (status.enabled ? '等待下一次 AI 行情分析' : 'AI 自动策略已关闭')];
+      if (status.effective) {
+        parts.push(`每 ${status.intervalMinutes} 分钟分析`);
+        parts.push(`置信度 ≥ ${Math.round(Number(status.minConfidence || 0) * 100)}%`);
+        if (status.candidate) parts.push(`候选 ${modeName(status.candidate)} ${status.candidateCount}/${status.confirmationsRequired}`);
+        if (Number(status.cooldownUntil) > Date.now()) parts.push(`冷却剩余 ${durationText(Number(status.cooldownUntil) - Date.now())}`);
+      }
+      if (status.lastActionAt) parts.push(`最近动作 ${new Date(status.lastActionAt).toLocaleString('zh-CN', { hour12: false })}`);
+      element.textContent = parts.join(' · ');
+    }
+
     function inactiveConsoleState(runtimeBot) {
       const label = consoleMode === 'live' ? '实盘' : '模拟盘';
       return {
@@ -1891,6 +1941,7 @@
         dailyPnl: null,
         preflight: null,
         paperReadiness: null,
+        aiAutopilot: null,
         strategyGuard: null,
         executionCosts: null,
         measurement: null,
@@ -2238,7 +2289,7 @@
     }
     function setBusyButton(button, busy, label) { button.disabled = busy; button.textContent = label; }
     function sourceName(source) { return source === 'real' ? '真实行情' : source === 'spot' ? '公共现货行情' : source === 'synthetic' ? '合成行情' : '正在连接'; }
-    function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', recovery: '回收' })[mode] || mode; }
+    function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', paused: '暂停', recovery: '回收' })[mode] || mode; }
     function durationText(ms) {
       const seconds = Math.max(0, Math.floor(Number(ms) / 1000));
       if (seconds < 60) return `${seconds} 秒`;

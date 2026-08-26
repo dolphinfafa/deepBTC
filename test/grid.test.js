@@ -15,6 +15,7 @@ import { EventEmitter } from 'node:events';
 import { decibelAuthHeaders } from '../src/exchange/de/auth.js';
 import { PaperExchange } from '../src/exchange/de/paper.js';
 import { directionalExposure, inventoryOrderDecision, isPassiveOpeningOrder } from '../src/strategy-guards.js';
+import { aiAutopilotAllowedInMode, completeAiAutopilotAction, evaluateAiAutopilot } from '../src/ai/autopilot.js';
 import '../public/grid-form-state.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -60,6 +61,54 @@ test('dashboard suggestions preserve a manually selected grid direction', () => 
   assert.equal(resolve({ manualMode: false, currentMode: 'long', suggestedMode: 'neutral' }), 'neutral');
   assert.equal(resolve({ manualMode: false, currentMode: 'neutral', suggestedMode: 'short' }), 'short');
   assert.equal(resolve({ manualMode: false, currentMode: 'neutral', suggestedMode: 'invalid' }), 'neutral');
+});
+
+test('AI autopilot requires confidence, aligned timeframes and consecutive decisions', () => {
+  const config = { enabled: true, minConfidence: 0.75, confirmations: 2, cooldownMinutes: 240 };
+  const long = {
+    suitable: true, mode: 'long', confidence: 0.84, regime: '上涨',
+    frames: { h4: { trend: 'up' }, h1: { trend: 'up' }, m15: { trend: 'range' } },
+  };
+  const first = evaluateAiAutopilot({ analysis: long, config, now: 1_000 });
+  assert.equal(first.ready, false);
+  assert.equal(first.reason, 'awaiting_confirmation');
+  assert.equal(first.state.candidateCount, 1);
+
+  const second = evaluateAiAutopilot({ analysis: long, state: first.state, config, now: 2_000 });
+  assert.equal(second.ready, true);
+  assert.equal(second.target, 'long');
+
+  const lowConfidence = evaluateAiAutopilot({ analysis: { ...long, confidence: 0.6 }, state: second.state, config, now: 3_000 });
+  assert.equal(lowConfidence.reason, 'low_confidence');
+  assert.equal(lowConfidence.state.candidateCount, 0);
+
+  const disagreement = evaluateAiAutopilot({
+    analysis: { ...long, frames: { h4: { trend: 'down' }, h1: { trend: 'range' }, m15: { trend: 'up' } } },
+    config, now: 4_000,
+  });
+  assert.equal(disagreement.reason, 'timeframes_disagree');
+});
+
+test('AI autopilot can pause and enforces its post-action cooldown', () => {
+  const config = { enabled: true, minConfidence: 0.75, confirmations: 2, cooldownMinutes: 60 };
+  const pause = { suitable: false, mode: 'neutral', confidence: 0.9, regime: '剧烈波动', frames: {} };
+  const first = evaluateAiAutopilot({ analysis: pause, config, now: 1_000 });
+  const second = evaluateAiAutopilot({ analysis: pause, state: first.state, config, now: 2_000 });
+  assert.equal(second.ready, true);
+  assert.equal(second.target, 'paused');
+
+  const acted = completeAiAutopilotAction(second.state, { action: 'stopped', target: 'paused', now: 2_000 });
+  const third = evaluateAiAutopilot({ analysis: pause, state: acted, config, now: 3_000 });
+  const fourth = evaluateAiAutopilot({ analysis: pause, state: third.state, config, now: 4_000 });
+  assert.equal(fourth.ready, false);
+  assert.equal(fourth.reason, 'cooldown');
+  assert.equal(fourth.cooldownUntil, 3_602_000);
+});
+
+test('AI autopilot is restricted to paper mode', () => {
+  assert.equal(aiAutopilotAllowedInMode('paper'), true);
+  assert.equal(aiAutopilotAllowedInMode('live'), false);
+  assert.equal(aiAutopilotAllowedInMode('unknown'), false);
 });
 
 test('replaces a fill one rung away', () => {
@@ -219,6 +268,7 @@ test('dashboard state never exposes a running paper bot as a running live bot', 
     position: { sizeBase: 0.01 }, totalPnl: 12.5,
     strategyGuard: { exposure: { pct: 12 } }, executionCosts: { total: 3 },
     measurement: { id: 'paper-run' }, measurementHistory: [{ id: 'old-paper-run' }],
+    aiAutopilot: { enabled: true, candidate: 'long' },
     activity: [{ t: 1, message: 'paper fill' }], lastPrice: 77_000,
   };
   const liveView = projectDashboardState(paperState, 'paper', 'live');
@@ -236,6 +286,7 @@ test('dashboard state never exposes a running paper bot as a running live bot', 
   assert.equal(liveView.strategyGuard, null);
   assert.equal(liveView.executionCosts, null);
   assert.equal(liveView.measurement, null);
+  assert.equal(liveView.aiAutopilot, null);
   assert.equal(liveView.lastPrice, 77_000);
   assert.equal(liveView.health.reason, '实盘服务未启动');
 });
@@ -460,11 +511,19 @@ test('AI settings persist locally without exposing the API key', () => {
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o-mini',
       apiKey: 'sk-test-secret',
+      autopilotEnabled: true,
+      autopilotMinConfidence: 0.8,
+      autopilotConfirmations: 3,
+      autopilotCooldownMinutes: 360,
     });
     assert.equal(saved.apiKey, 'sk-test-secret');
     const visible = publicAiSettings(loadAiSettings(dir));
     assert.equal(visible.hasApiKey, true);
     assert.equal('apiKey' in visible, false);
+    assert.equal(visible.autopilotEnabled, true);
+    assert.equal(visible.autopilotMinConfidence, 0.8);
+    assert.equal(visible.autopilotConfirmations, 3);
+    assert.equal(visible.autopilotCooldownMinutes, 360);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -19,6 +19,10 @@ export function updateAiSettings(root, input = {}) {
   if (input.sentinelMinutes !== undefined) next.sentinelMinutes = bounded(input.sentinelMinutes, 0, 1440, 5);
   if (input.marketMinutes !== undefined) next.marketMinutes = bounded(input.marketMinutes, 0, 1440, 30);
   if (input.reportHour !== undefined) next.reportHour = bounded(input.reportHour, -1, 23, 20);
+  if (input.autopilotEnabled !== undefined) next.autopilotEnabled = input.autopilotEnabled === true;
+  if (input.autopilotMinConfidence !== undefined) next.autopilotMinConfidence = bounded(input.autopilotMinConfidence, 0.5, 0.95, 0.75);
+  if (input.autopilotConfirmations !== undefined) next.autopilotConfirmations = Math.round(bounded(input.autopilotConfirmations, 2, 6, 2));
+  if (input.autopilotCooldownMinutes !== undefined) next.autopilotCooldownMinutes = Math.round(bounded(input.autopilotCooldownMinutes, 60, 1440, 240));
   if (input.apiKey !== undefined && String(input.apiKey).trim()) next.apiKey = String(input.apiKey).trim();
   if (input.clearApiKey === true) delete next.apiKey;
   if (!['openai', 'anthropic', 'gemini'].includes(next.provider)) throw new Error('AI 提供商不受支持。');
@@ -37,6 +41,10 @@ export function publicAiSettings(settings) {
     sentinelMinutes: bounded(settings.sentinelMinutes, 0, 1440, 5),
     marketMinutes: bounded(settings.marketMinutes, 0, 1440, 30),
     reportHour: bounded(settings.reportHour, -1, 23, 20),
+    autopilotEnabled: settings.autopilotEnabled === true,
+    autopilotMinConfidence: bounded(settings.autopilotMinConfidence, 0.5, 0.95, 0.75),
+    autopilotConfirmations: Math.round(bounded(settings.autopilotConfirmations, 2, 6, 2)),
+    autopilotCooldownMinutes: Math.round(bounded(settings.autopilotCooldownMinutes, 60, 1440, 240)),
     hasApiKey: Boolean(settings.apiKey),
   };
 }

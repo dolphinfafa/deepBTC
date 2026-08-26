@@ -2,17 +2,19 @@ import { aiChat, extractJson, getAiConfig, publicAiConfig } from './provider.js'
 import { analyzeTrend } from '../trend.js';
 import { loadSnapshot, saveSnapshot } from '../persist.js';
 
-export function createAiService({ getBot, getExchange, notify }) {
-  const service = new AiService(getBot, getExchange, notify);
+export function createAiService({ getBot, getExchange, notify, onMarketAnalysis, getAutopilotStatus }) {
+  const service = new AiService(getBot, getExchange, notify, onMarketAnalysis, getAutopilotStatus);
   service.start();
   return service;
 }
 
 class AiService {
-  constructor(getBot, getExchange, notify) {
+  constructor(getBot, getExchange, notify, onMarketAnalysis, getAutopilotStatus) {
     this.getBot = getBot;
     this.getExchange = getExchange;
     this.notify = notify;
+    this.onMarketAnalysis = onMarketAnalysis;
+    this.getAutopilotStatus = getAutopilotStatus;
     this.sentinel = null;
     this.sentinelError = null;
     this.report = null;
@@ -59,6 +61,7 @@ class AiService {
       marketError: this.marketError,
       outOfRangeAdvice: this.outOfRangeAdvice,
       oorAdvice: this.outOfRangeAdvice ? { de: this.outOfRangeAdvice } : {},
+      autopilot: this.getAutopilotStatus?.() || null,
     };
   }
 
@@ -79,7 +82,8 @@ class AiService {
     }
     if (config.marketMinutes > 0 && now - this.lastRun.market >= config.marketMinutes * 60_000) {
       this.lastRun.market = now;
-      await this.analyze().catch(() => {});
+      const analysis = await this.analyze().catch(() => null);
+      if (analysis) await this.onMarketAnalysis?.(analysis).catch(() => {});
     }
     const day = new Date().toISOString().slice(0, 10);
     if (config.reportHour >= 0 && new Date().getHours() === config.reportHour && this.lastReportDay !== day) {

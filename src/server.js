@@ -16,9 +16,10 @@ import { createAuditLog } from './audit.js';
 import { createNotifier } from './notifier.js';
 import { DailyPnlTracker } from './daily-pnl.js';
 import { loadConnectionSettings, updateConnectionSettings, publicConnectionSettings } from './connection-settings.js';
-import { publicAiConfig } from './ai/provider.js';
+import { getAiConfig, publicAiConfig } from './ai/provider.js';
 import { loadAiSettings, updateAiSettings, publicAiSettings } from './ai/settings.js';
 import { createAiService } from './ai/service.js';
+import { aiAutopilotAllowedInMode, completeAiAutopilotAction, evaluateAiAutopilot } from './ai/autopilot.js';
 import { projectDashboardState, resolveDashboardRoute } from './dashboard-routing.js';
 
 const cfg = getConfig();
@@ -28,6 +29,11 @@ const notifier = createNotifier(cfg.notifications, ROOT);
 const dailyPnl = new DailyPnlTracker(ROOT);
 const liveRisk = new LiveRiskState(ROOT, cfg.riskPolicy);
 const AUTO_REBALANCE_FILE = path.join(ROOT, '.auto-rebalance.json');
+const AI_AUTOPILOT_FILE = path.join(ROOT, '.ai-autopilot.json');
+const AI_AUTOPILOT_CONFLICTING_ACTIONS = new Set([
+  '/api/start', '/api/stop', '/api/adjust', '/api/paper-equity', '/api/cancel-orders',
+  '/api/close-position', '/api/start-recovery', '/api/reconnect', '/api/restart',
+]);
 let lastPreflight = null;
 let emergencyInFlight = false;
 let restartRequestedAt = null;
@@ -40,6 +46,8 @@ let lastAutoRebalanceCheckAt = Number(persistedAutoRebalance.lastCheckAt) || 0;
 let lastAutoRebalanceStatus = persistedAutoRebalance.last || { t: null, code: 'not_running', reason: '网格尚未运行' };
 let autoRebalanceInFlight = false;
 let lastPaperReadiness = null;
+let aiAutopilotState = loadAiAutopilotState();
+let aiAutopilotInFlight = false;
 
 validateStartup();
 
@@ -56,7 +64,13 @@ if (proxyResult.used) {
 
 let exchange = createExchange(cfg.decibel);
 let bot = new GridBot(exchange, { onChange: (state) => saveSnapshot('decibel', state) });
-const aiService = createAiService({ getBot: () => bot, getExchange: () => exchange, notify: (message) => notifier.send(message) });
+const aiService = createAiService({
+  getBot: () => bot,
+  getExchange: () => exchange,
+  notify: (message) => notifier.send(message),
+  onMarketAnalysis: maybeApplyAiAutopilot,
+  getAutopilotStatus: aiAutopilotPublicState,
+});
 bot.restore(loadSnapshot('decibel'));
 exchange.on('error', (error) => console.error('[Decibel] ' + (error?.message || error)));
 
@@ -150,12 +164,28 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/ai-config') {
       if (request.method === 'POST') {
         return runAction(response, async () => {
-          const saved = updateAiSettings(ROOT, await readBody(request));
-          audit.write('ai_settings_updated', { provider: saved.provider, hasApiKey: Boolean(saved.apiKey) });
-          return { settings: publicAiSettings(saved), config: publicAiConfig() };
+          const input = await readBody(request);
+          if (aiAutopilotInFlight) throw new Error('AI 自动策略正在执行，请等待本轮动作完成后再修改设置。');
+          if (input.autopilotEnabled === true && !aiAutopilotAllowedInMode(cfg.decibel.mode)) {
+            throw new Error('AI 自动策略仅允许 PAPER 模拟盘，实盘禁止启用。');
+          }
+          const saved = updateAiSettings(ROOT, input);
+          if (saved.autopilotEnabled !== true) {
+            aiAutopilotState = { ...aiAutopilotState, candidate: null, candidateCount: 0, lastReason: 'disabled', lastMessage: 'AI 自动策略已关闭' };
+            saveAiAutopilotState();
+          } else {
+            aiAutopilotState = { ...aiAutopilotState, candidate: null, candidateCount: 0, lastReason: 'waiting', lastMessage: '等待下一次 AI 行情分析' };
+            saveAiAutopilotState();
+          }
+          audit.write('ai_settings_updated', {
+            provider: saved.provider,
+            hasApiKey: Boolean(saved.apiKey),
+            autopilotEnabled: saved.autopilotEnabled === true,
+          });
+          return { settings: publicAiSettings(saved), config: publicAiConfig(), autopilot: aiAutopilotPublicState() };
         }, url.pathname);
       }
-      return send(response, 200, { settings: publicAiSettings(loadAiSettings(ROOT)), config: publicAiConfig() });
+      return send(response, 200, { settings: publicAiSettings(loadAiSettings(ROOT)), config: publicAiConfig(), autopilot: aiAutopilotPublicState() });
     }
 
     if (['/api/ai-analyze', '/api/ai/analyze', '/api/ai/market-run'].includes(url.pathname) && request.method === 'POST') {
@@ -533,6 +563,7 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`  Decibel [${cfg.decibel.mode.toUpperCase()}] [${cfg.decibel.network}]`);
   console.log(`  自动恢复: ${cfg.autoResume ? '开启' : '关闭'}`);
   if (cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance)) console.log('  波动率自动调区间: 开启');
+  if (aiAutopilotPublicState().effective) console.log('  AI 自动策略: 开启（仅 PAPER）');
   if (!isLoopback) console.log('  局域网访问已启用，API 受 DASHBOARD_TOKEN 保护。');
   if (cfg.decibel.mode === 'paper') console.log('  当前为模拟盘，不会发送真实订单。');
   console.log('='.repeat(56) + '\n');
@@ -717,6 +748,7 @@ function publicState(consoleMode = null) {
     dailyPnl: dailyPnl.summary(state.equity, notificationSettings.timezone),
     preflight: lastPreflight ? { t: lastPreflight.t, expiresAt: lastPreflight.expiresAt, ready: lastPreflight.ready } : null,
     paperReadiness: mergedReadiness,
+    aiAutopilot: aiAutopilotPublicState(),
   };
   return consoleMode ? projectDashboardState(result, cfg.decibel.mode, consoleMode) : result;
 }
@@ -750,6 +782,52 @@ function saveAutoRebalanceState() {
     }, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, AUTO_REBALANCE_FILE);
   } catch { /* status persistence must not affect order management */ }
+}
+
+function loadAiAutopilotState() {
+  try { return JSON.parse(fs.readFileSync(AI_AUTOPILOT_FILE, 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+function saveAiAutopilotState() {
+  try {
+    const tmp = AI_AUTOPILOT_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(aiAutopilotState, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, AI_AUTOPILOT_FILE);
+  } catch { /* status persistence must not affect order management */ }
+}
+
+function aiAutopilotPublicState() {
+  const config = getAiConfig();
+  const enabled = config.autopilotEnabled === true;
+  const effective = enabled && aiAutopilotAllowedInMode(cfg.decibel.mode) && Boolean(config.apiKey) && config.marketMinutes > 0;
+  let message = aiAutopilotState.lastMessage || (enabled ? '等待下一次 AI 行情分析' : 'AI 自动策略已关闭');
+  if (cfg.decibel.mode === 'live') message = '实盘禁止 AI 自动切换策略';
+  else if (!enabled) message = 'AI 自动策略已关闭';
+  else if (!config.apiKey) message = '尚未配置 AI API Key';
+  else if (!(config.marketMinutes > 0)) message = 'AI 行情分析间隔已关闭';
+  return {
+    enabled,
+    effective,
+    intervalMinutes: config.marketMinutes,
+    minConfidence: config.autopilotMinConfidence,
+    confirmationsRequired: config.autopilotConfirmations,
+    cooldownMinutes: config.autopilotCooldownMinutes,
+    candidate: aiAutopilotState.candidate || null,
+    candidateCount: Number(aiAutopilotState.candidateCount) || 0,
+    lastAnalysisAt: Number(aiAutopilotState.lastAnalysisAt) || null,
+    lastRegime: aiAutopilotState.lastRegime || null,
+    lastConfidence: aiAutopilotState.lastConfidence ?? null,
+    lastActionAt: Number(aiAutopilotState.lastActionAt) || null,
+    lastAction: aiAutopilotState.lastAction || null,
+    lastTarget: aiAutopilotState.lastTarget || null,
+    cooldownUntil: aiAutopilotState.lastActionAt
+      ? Number(aiAutopilotState.lastActionAt) + config.autopilotCooldownMinutes * 60_000
+      : null,
+    lastReason: aiAutopilotState.lastReason || (enabled ? 'waiting' : 'disabled'),
+    message,
+    inFlight: aiAutopilotInFlight,
+  };
 }
 
 function publicPaperReadiness(state = bot.getState()) {
@@ -857,7 +935,7 @@ async function monitorLiveRisk() {
 async function maybeAutoRebalance() {
   const now = Date.now();
   const enabled = cfg.autoRebalance && (cfg.decibel.mode !== 'live' || cfg.autoLiveRebalance);
-  if (autoRebalanceInFlight) return;
+  if (autoRebalanceInFlight || aiAutopilotInFlight) return;
   const state = bot.getState();
   const gate = autoRebalanceGate({
     enabled,
@@ -944,6 +1022,207 @@ async function maybeAutoRebalance() {
   } finally {
     autoRebalanceInFlight = false;
   }
+}
+
+async function maybeApplyAiAutopilot(analysis) {
+  const config = getAiConfig();
+  const policy = {
+    enabled: config.autopilotEnabled === true,
+    minConfidence: config.autopilotMinConfidence,
+    confirmations: config.autopilotConfirmations,
+    cooldownMinutes: config.autopilotCooldownMinutes,
+  };
+  if (!aiAutopilotAllowedInMode(cfg.decibel.mode)) {
+    aiAutopilotState = { ...aiAutopilotState, candidate: null, candidateCount: 0, lastReason: 'live_disabled', lastMessage: '实盘禁止 AI 自动切换策略' };
+    saveAiAutopilotState();
+    return;
+  }
+
+  const previousCandidate = aiAutopilotState.candidate;
+  const previousCount = Number(aiAutopilotState.candidateCount) || 0;
+  const gate = evaluateAiAutopilot({ analysis, state: aiAutopilotState, config: policy });
+  aiAutopilotState = {
+    ...gate.state,
+    lastReason: gate.reason,
+    lastMessage: aiAutopilotReason(gate.reason, gate.target, gate.state.candidateCount, policy.confirmations),
+  };
+  saveAiAutopilotState();
+
+  if (gate.target && (gate.ready || previousCandidate !== gate.state.candidate || previousCount !== gate.state.candidateCount)) {
+    audit.write('ai_autopilot_observed', {
+      target: gate.target,
+      confidence: gate.state.lastConfidence,
+      regime: gate.state.lastRegime,
+      confirmations: gate.state.candidateCount,
+      required: policy.confirmations,
+      reason: gate.reason,
+      timeframeVotes: gate.support?.votes || null,
+    });
+  }
+  if (!gate.ready) return;
+  if (aiAutopilotInFlight || autoRebalanceInFlight) {
+    aiAutopilotState = { ...aiAutopilotState, lastReason: 'busy', lastMessage: '其他策略调整正在执行，本轮保持现状' };
+    saveAiAutopilotState();
+    return;
+  }
+
+  aiAutopilotInFlight = true;
+  aiAutopilotState = { ...aiAutopilotState, lastReason: 'executing', lastMessage: `正在切换为${autopilotTargetName(gate.target)}` };
+  saveAiAutopilotState();
+  try {
+    const outcome = await executeAiAutopilot(gate.target, analysis);
+    if (outcome.action === 'aligned') {
+      aiAutopilotState = {
+        ...aiAutopilotState,
+        candidate: null,
+        candidateCount: 0,
+        lastTarget: gate.target,
+        lastReason: 'aligned',
+        lastMessage: `当前已经是${autopilotTargetName(gate.target)}，保持现状`,
+      };
+    } else {
+      aiAutopilotState = {
+        ...completeAiAutopilotAction(aiAutopilotState, { action: outcome.action, target: gate.target }),
+        lastReason: 'completed',
+        lastMessage: outcome.message,
+      };
+      audit.write('ai_autopilot_executed', {
+        action: outcome.action,
+        target: gate.target,
+        confidence: gate.state.lastConfidence,
+        regime: gate.state.lastRegime,
+        previous: outcome.previous,
+        next: outcome.next,
+      }, 'warn');
+      await notifySafe(`[GridPilot PAPER AI 自动策略] ${outcome.message}`);
+    }
+    saveAiAutopilotState();
+  } catch (error) {
+    const detail = error?.message || String(error);
+    aiAutopilotState = {
+      ...completeAiAutopilotAction(aiAutopilotState, { action: 'failed', target: gate.target }),
+      lastReason: 'failed',
+      lastMessage: `自动策略未完成：${detail}`,
+    };
+    saveAiAutopilotState();
+    audit.write('ai_autopilot_failed', { target: gate.target, error: detail, state: compactState(bot.getState()) }, 'error');
+    await notifySafe(`[GridPilot PAPER AI 自动策略失败] ${detail}`);
+  } finally {
+    aiAutopilotInFlight = false;
+    await refreshPaperReadiness().catch(() => {});
+  }
+}
+
+async function executeAiAutopilot(target, analysis) {
+  const before = bot.getState();
+  if (before.recovery || bot.recovery) throw new Error('只减仓恢复流程正在运行，禁止自动切换策略。');
+
+  if (target === 'paused') {
+    if (!before.running) {
+      if (before.position || before.openOrders || before.exchangeOpenOrders) throw new Error('网格已停止但仍有仓位或挂单，需要人工处理。');
+      return { action: 'aligned', previous: compactState(before), next: compactState(before) };
+    }
+    const stopped = await bot.stop({ closePosition: true });
+    ensureAutopilotAccountClean(stopped);
+    return {
+      action: 'stopped',
+      message: 'AI 连续确认当前不适合网格，已撤单平仓并暂停',
+      previous: compactState(before),
+      next: compactState(stopped),
+    };
+  }
+
+  if (before.running && before.config?.mode === target) {
+    return { action: 'aligned', previous: compactState(before), next: compactState(before) };
+  }
+  if (!before.running && (before.position || before.openOrders || before.exchangeOpenOrders)) {
+    throw new Error('空闲账户仍有仓位或挂单，禁止自动接管。');
+  }
+
+  const params = await buildAiAutopilotParams(target, analysis, before);
+  if (before.running) {
+    const stopped = await bot.stop({ closePosition: true });
+    ensureAutopilotAccountClean(stopped);
+    await validateAiAutopilotParams(params);
+  }
+  const started = await bot.start(params);
+  return {
+    action: before.running ? 'switched' : 'started',
+    message: `AI 连续确认${analysis.regime || '当前行情'}，已${before.running ? '切换' : '启动'}${autopilotTargetName(target)}网格`,
+    previous: compactState(before),
+    next: compactState(started),
+  };
+}
+
+async function buildAiAutopilotParams(target, analysis, state) {
+  const market = await marketById(state.config?.marketId ?? analysis.marketId);
+  const price = Number(await exchange.getPrice(market.marketId));
+  if (!(price > 0)) throw new Error('未取得有效 BTC 最新价格。');
+  const candles = await exchange.getCandles(market.marketId, 3600, 200);
+  if (!candles?.length || candles.length < 20) throw new Error('BTC 1h K 线不足，无法生成安全区间。');
+  const trend = analyzeTrend(candles);
+  const suggested = suggestAdaptiveGrid({
+    price,
+    atrPct: trend.atrPct,
+    equity: state.equity,
+    market,
+    trend: trend.trend,
+  });
+  const previous = state.config || {};
+  const params = {
+    marketId: market.marketId,
+    mode: target,
+    lower: suggested.lower,
+    upper: suggested.upper,
+    gridCount: Number(previous.gridCount) || suggested.gridCount,
+    sizeBase: Number(previous.sizeBase) || suggested.sizeBase,
+    leverage: Number(previous.leverage) || suggested.leverage,
+    outOfRangeAction: previous.outOfRangeAction === 'recover' ? 'recover' : 'close',
+    maxDirectionalNotionalPct: Number(previous.maxDirectionalNotionalPct) || suggested.maxDirectionalNotionalPct,
+    trendGuardEnabled: previous.trendGuardEnabled !== false,
+  };
+  await validateAiAutopilotParams(params, market, price);
+  return params;
+}
+
+async function validateAiAutopilotParams(params, knownMarket = null, knownPrice = null) {
+  const market = knownMarket || await marketById(params.marketId);
+  const price = Number(knownPrice) > 0 ? Number(knownPrice) : Number(await exchange.getPrice(market.marketId));
+  const strategyCheck = evaluateStrategyParams({ params, market, strategy: cfg.decibel.strategy || BTC_GRID_STRATEGY });
+  if (!strategyCheck.ok) throw new Error(strategyCheck.errors.join(' '));
+  const riskCheck = evaluateStartRisk({
+    params,
+    market,
+    equity: bot.getState().equity,
+    policy: cfg.riskPolicy,
+    existingPosition: null,
+    currentPrice: price,
+  });
+  if (!riskCheck.ok) throw new Error(riskCheck.errors.join(' '));
+}
+
+function ensureAutopilotAccountClean(state) {
+  if (state.position || Number(state.openOrders) > 0 || Number(state.exchangeOpenOrders) > 0) {
+    throw new Error('撤单或平仓未确认，已中止自动重启。');
+  }
+}
+
+function aiAutopilotReason(reason, target, count, required) {
+  const targetName = autopilotTargetName(target);
+  return ({
+    disabled: 'AI 自动策略已关闭',
+    invalid_decision: 'AI 输出不完整，本轮保持现状',
+    low_confidence: 'AI 置信度不足，本轮保持现状',
+    insufficient_timeframes: '多周期 K 线不足，本轮保持现状',
+    timeframes_disagree: '多周期趋势不一致，本轮保持现状',
+    awaiting_confirmation: `等待${targetName}连续确认：${count}/${required}`,
+    cooldown: '策略切换冷却中，本轮保持现状',
+    ready: `${targetName}确认完成，等待执行`,
+  })[reason] || '等待下一次 AI 行情分析';
+}
+
+function autopilotTargetName(target) {
+  return ({ neutral: '中性', long: '做多', short: '做空', paused: '暂停' })[target] || '目标策略';
 }
 
 async function processDailyReport() {
@@ -1191,6 +1470,11 @@ async function readBody(request, maxBytes = 100_000) {
 }
 
 async function runAction(response, action, actionName = 'api_action') {
+  if (aiAutopilotInFlight && AI_AUTOPILOT_CONFLICTING_ACTIONS.has(actionName)) {
+    const message = 'AI 自动策略正在撤单、平仓或重建网格，请等待本轮动作完成。';
+    audit.write('api_action_rejected', { action: actionName, error: message }, 'warn');
+    return send(response, 409, { error: message });
+  }
   try { return send(response, 200, await action()); }
   catch (error) {
     audit.write('api_action_rejected', { action: actionName, error: error?.message || String(error) }, 'warn');

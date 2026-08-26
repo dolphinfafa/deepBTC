@@ -30,6 +30,10 @@ export function getAiConfig() {
     sentinelMinutes: number(saved.sentinelMinutes ?? process.env.AI_SENTINEL_MINUTES, 5),
     marketMinutes: number(saved.marketMinutes ?? process.env.AI_MARKET_MINUTES, 30),
     reportHour: number(saved.reportHour ?? process.env.AI_REPORT_HOUR, 20),
+    autopilotEnabled: bool(saved.autopilotEnabled ?? process.env.AI_AUTOPILOT, false),
+    autopilotMinConfidence: boundedNumber(saved.autopilotMinConfidence ?? process.env.AI_AUTOPILOT_MIN_CONFIDENCE, 0.75, 0.5, 0.95),
+    autopilotConfirmations: Math.round(boundedNumber(saved.autopilotConfirmations ?? process.env.AI_AUTOPILOT_CONFIRMATIONS, 2, 2, 6)),
+    autopilotCooldownMinutes: Math.round(boundedNumber(saved.autopilotCooldownMinutes ?? process.env.AI_AUTOPILOT_COOLDOWN_MINUTES, 240, 60, 1440)),
   };
 }
 
@@ -43,6 +47,10 @@ export function publicAiConfig() {
     sentinelMinutes: config.sentinelMinutes,
     marketMinutes: config.marketMinutes,
     reportHour: config.reportHour,
+    autopilotEnabled: config.autopilotEnabled,
+    autopilotMinConfidence: config.autopilotMinConfidence,
+    autopilotConfirmations: config.autopilotConfirmations,
+    autopilotCooldownMinutes: config.autopilotCooldownMinutes,
     configured: Boolean(config.apiKey),
   };
 }
@@ -50,6 +58,16 @@ export function publicAiConfig() {
 function number(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function bool(value, fallback = false) {
+  if (value == null || value === '') return fallback;
+  return value === true || String(value).toLowerCase() === 'true' || String(value) === '1';
 }
 
 export async function aiChat({ system = '', messages = [], small = false, json = false, maxTokens = 1200, temperature = 0.3, timeoutMs = 60000 }) {
