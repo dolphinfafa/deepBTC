@@ -15,6 +15,7 @@ import { EventEmitter } from 'node:events';
 import { decibelAuthHeaders } from '../src/exchange/de/auth.js';
 import { PaperExchange } from '../src/exchange/de/paper.js';
 import { directionalExposure, inventoryOrderDecision, isPassiveOpeningOrder } from '../src/strategy-guards.js';
+import '../public/grid-form-state.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,6 +51,15 @@ test('seeds neutral, long and short grids correctly', () => {
   assert.ok(long.every((order) => order.side === 'buy' && !order.reduceOnly));
   const short = seedOrders({ levels: grid.levels, price: 150, mode: 'short', spacing: grid.spacing });
   assert.ok(short.every((order) => order.side === 'sell' && !order.reduceOnly));
+});
+
+test('dashboard suggestions preserve a manually selected grid direction', () => {
+  const resolve = globalThis.GridPilotForm.resolveSuggestedMode;
+  assert.equal(resolve({ manualMode: true, currentMode: 'long', suggestedMode: 'neutral' }), 'long');
+  assert.equal(resolve({ manualMode: true, currentMode: 'short', suggestedMode: 'neutral' }), 'short');
+  assert.equal(resolve({ manualMode: false, currentMode: 'long', suggestedMode: 'neutral' }), 'neutral');
+  assert.equal(resolve({ manualMode: false, currentMode: 'neutral', suggestedMode: 'short' }), 'short');
+  assert.equal(resolve({ manualMode: false, currentMode: 'neutral', suggestedMode: 'invalid' }), 'neutral');
 });
 
 test('replaces a fill one rung away', () => {
@@ -342,6 +352,20 @@ test('live start rolls back a partially placed initial ladder', async () => {
   assert.ok(exchange.cancelCalls >= 2);
   assert.equal(bot.active.size, 0);
   assert.equal(bot.running, false);
+});
+
+test('bot starts long and short grids with only the submitted opening side', async () => {
+  for (const [mode, side] of [['long', 'buy'], ['short', 'sell']]) {
+    const exchange = fakeLiveExchange();
+    const bot = new GridBot(exchange);
+    await bot.start({ ...gridConfig(), mode });
+
+    assert.equal(bot.config.mode, mode);
+    assert.ok(bot.active.size > 0);
+    assert.ok([...bot.active.values()].every((order) => order.side === side && !order.reduceOnly));
+
+    await bot.stop({ closePosition: false });
+  }
 });
 
 test('daily PnL tracks the selected timezone day and avoids duplicate sends', () => {

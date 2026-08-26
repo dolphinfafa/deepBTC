@@ -787,6 +787,7 @@
   </div>
   <div id="toast" class="toast"></div>
 
+  <script src="grid-form-state.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const queryToken = new URLSearchParams(location.search).get('token');
@@ -796,7 +797,7 @@
     const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
     let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
     let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualLeverage: false, paperEquityDirty: false, busy: false, confirmResolver: null, stream: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualMode: false, manualLeverage: false, paperEquityDirty: false, busy: false, confirmResolver: null, stream: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
 
     function consolePageUrl(mode) {
       const url = new URL(location.href);
@@ -901,6 +902,7 @@
         const button = event.target.closest('button[data-mode]');
         if (!button) return;
         state.formDirty = true;
+        state.manualMode = true;
         state.mode = button.dataset.mode;
         document.querySelectorAll('#mode-control button').forEach((item) => item.classList.toggle('active', item === button));
       });
@@ -1155,7 +1157,12 @@
       const result = state.aiSuggestion;
       if (!result) return;
       state.formDirty = true;
-      state.mode = ['neutral', 'long', 'short'].includes(result.mode) ? result.mode : 'neutral';
+      const retainedMode = state.manualMode ? state.mode : null;
+      state.mode = GridPilotForm.resolveSuggestedMode({
+        manualMode: !!retainedMode,
+        currentMode: retainedMode,
+        suggestedMode: result.mode,
+      });
       document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
       if (Number(result.lower) > 0) $('lower').value = trimNumber(result.lower, 8);
       if (Number(result.upper) > Number(result.lower)) $('upper').value = trimNumber(result.upper, 8);
@@ -1163,7 +1170,9 @@
       if (Number(result.sizeBase) > 0) $('size-base').value = trimNumber(result.sizeBase, 8);
       if (Number(result.maxDirectionalNotionalPct) > 0) $('max-directional-exposure').value = result.maxDirectionalNotionalPct;
       if (typeof result.trendGuardEnabled === 'boolean') $('trend-guard').checked = result.trendGuardEnabled;
-      $('action-status').textContent = '已采用 AI 建议参数，请人工核对后启动。';
+      $('action-status').textContent = retainedMode
+        ? `已采用 AI 建议参数，并保留人工方向：${modeName(retainedMode)}。请人工核对后启动。`
+        : '已采用 AI 建议参数，请人工核对后启动。';
       showToast('AI 参数已填入');
     }
 
@@ -1457,11 +1466,18 @@
       const price = Number(state.analysis?.price || state.bot?.lastPrice || state.market?.lastPrice);
       if (!(price > 0)) return showToast('当前没有有效价格。', true);
       try {
+        const manuallySelectedMode = state.manualMode ? state.mode : null;
         const manualLeverage = state.manualLeverage ? Number($('leverage').value) : null;
         const result = await request(`/api/strategy-suggestion?marketId=${state.market.marketId}`);
         const params = result.suggestion;
+        const retainedMode = state.manualMode ? state.mode : manuallySelectedMode;
         state.formDirty = true;
-        state.mode = params.mode;
+        state.mode = GridPilotForm.resolveSuggestedMode({
+          manualMode: !!retainedMode,
+          currentMode: retainedMode,
+          suggestedMode: params.mode,
+        });
+        if (retainedMode) state.manualMode = true;
         document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
         $('lower').value = trimNumber(params.lower, 8);
         $('upper').value = trimNumber(params.upper, 8);
@@ -1471,8 +1487,11 @@
         $('oor-action').value = params.outOfRangeAction;
         $('max-directional-exposure').value = params.maxDirectionalNotionalPct || state.app?.strategy?.maxDirectionalNotionalPct || 15;
         $('trend-guard').checked = params.trendGuardEnabled !== false;
-        $('action-status').textContent = manualLeverage > 0
-          ? `${params.rationale} · 已保留人工杠杆 ${manualLeverage}x`
+        const retained = [];
+        if (retainedMode) retained.push(`人工方向 ${modeName(retainedMode)}`);
+        if (manualLeverage > 0) retained.push(`人工杠杆 ${manualLeverage}x`);
+        $('action-status').textContent = retained.length
+          ? `${params.rationale} · 已保留${retained.join('、')}`
           : params.rationale;
       } catch (error) {
         showToast(error.message, true);
@@ -1497,7 +1516,7 @@
         const phrase = await phraseDialog(`实盘将发送真实订单。请输入 ${command} ${state.market.displayName} 继续：`);
         if (phrase == null) return;
         body.liveConfirmation = phrase.trim();
-      } else if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启动'} ${body.gridCount} 格模拟网格，杠杆 ${body.leverage}x？`))) return;
+      } else if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启动'} ${body.gridCount} 格${modeName(body.mode)}模拟网格，杠杆 ${body.leverage}x？`))) return;
       await action('/api/start', body);
     }
 
@@ -1881,6 +1900,7 @@
 
     function syncForm(config) {
       state.formDirty = false;
+      state.manualMode = false;
       state.manualLeverage = false;
       state.mode = config.mode || state.mode;
       document.querySelectorAll('#mode-control button').forEach((button) => button.classList.toggle('active', button.dataset.mode === state.mode));
