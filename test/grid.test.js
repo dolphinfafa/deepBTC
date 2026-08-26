@@ -16,6 +16,7 @@ import { decibelAuthHeaders } from '../src/exchange/de/auth.js';
 import { PaperExchange } from '../src/exchange/de/paper.js';
 import { directionalExposure, inventoryOrderDecision, isPassiveOpeningOrder } from '../src/strategy-guards.js';
 import { aiAutopilotAllowedInMode, completeAiAutopilotAction, evaluateAiAutopilot } from '../src/ai/autopilot.js';
+import { buildStrategyProfileParams, listStrategyProfiles, resolveStrategyProfile } from '../src/strategy-profiles.js';
 import '../public/grid-form-state.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -141,6 +142,47 @@ test('suggests a conservative BTC grid from ATR and equity', () => {
   assert.equal(result.leverage, 2);
 });
 
+test('exposes named static strategies and keeps AI rotation paper-only', () => {
+  const paper = listStrategyProfiles({ runtimeMode: 'paper', aiConfigured: true });
+  assert.deepEqual(paper.map((profile) => profile.id), ['range_balanced', 'trend_long', 'trend_short', 'ai_rotation']);
+  assert.deepEqual(paper.map((profile) => profile.mode), ['neutral', 'long', 'short', 'dynamic']);
+  assert.ok(paper.every((profile) => profile.available));
+
+  const live = listStrategyProfiles({ runtimeMode: 'live', aiConfigured: true });
+  assert.equal(live.find((profile) => profile.id === 'ai_rotation').available, false);
+  const paperWithoutAi = listStrategyProfiles({ runtimeMode: 'paper', aiConfigured: false });
+  assert.equal(paperWithoutAi.find((profile) => profile.id === 'ai_rotation').available, false);
+  assert.throws(() => resolveStrategyProfile('ai_rotation', { runtimeMode: 'live', aiConfigured: true }), /仅允许 PAPER/);
+  assert.throws(() => resolveStrategyProfile('missing', { runtimeMode: 'paper', aiConfigured: true }), /策略不存在/);
+});
+
+test('named strategy parameters come entirely from the adaptive server suggestion', () => {
+  const suggestion = suggestAdaptiveGrid({
+    price: 70000, atrPct: 1.2, equity: 10000,
+    market: { stepPrice: 1, stepSize: 0.00001, minOrderSize: 0.0001 },
+  });
+  const params = buildStrategyProfileParams({
+    strategyId: 'trend_long', suggestion, marketId: 1, runtimeMode: 'paper', aiConfigured: false,
+  });
+  assert.equal(params.strategyId, 'trend_long');
+  assert.equal(params.mode, 'long');
+  assert.equal(params.lower, suggestion.lower);
+  assert.equal(params.upper, suggestion.upper);
+  assert.equal(params.gridCount, suggestion.gridCount);
+  assert.equal(params.sizeBase, suggestion.sizeBase);
+  assert.equal(params.leverage, suggestion.leverage);
+  const risk = evaluateStartRisk({
+    params,
+    market: { displayName: 'BTC-USD', maxLeverage: 20, minOrderSize: 0.0001 },
+    equity: 10000,
+    policy: { maxGridCount: 40, maxLeverage: 10, maxNotional: 0, maxMarginPct: 35, minMaintenanceMarginRatio: 300 },
+    existingPosition: { sizeBase: 0.001 },
+    currentPrice: 70000,
+  });
+  assert.equal(risk.ok, true);
+  assert.ok(risk.metrics.existingNotional > 0);
+});
+
 test('locks the first strategy to BTC-USD and 10-40 grids', () => {
   const market = { displayName: 'BTC-USD' };
   assert.equal(evaluateStrategyParams({ params: { mode: 'neutral', gridCount: 20 }, market }).ok, true);
@@ -263,7 +305,7 @@ test('routes paper and live dashboards to distinct page views', () => {
 
 test('dashboard state never exposes a running paper bot as a running live bot', () => {
   const paperState = {
-    mode: 'paper', running: true, config: { displayName: 'BTC-USD' },
+    mode: 'paper', running: true, config: { displayName: 'BTC-USD', strategyId: 'ai_rotation' },
     openOrders: 28, exchangeOpenOrders: 28, equity: 10_000,
     position: { sizeBase: 0.01 }, totalPnl: 12.5,
     strategyGuard: { exposure: { pct: 12 } }, executionCosts: { total: 3 },
@@ -298,6 +340,14 @@ test('dashboard state keeps the active mode state unchanged', () => {
   assert.equal(paperView.running, true);
   assert.equal(paperView.openOrders, 12);
   assert.equal(paperView.equity, 10_001);
+});
+
+test('dashboard exposes only named strategy startup and keeps live connection settings off paper', () => {
+  const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
+  assert.match(html, /id="strategy-profile-select"/);
+  assert.match(html, /id="legacy-strategy-fields" hidden/);
+  assert.match(html, /id="connection-settings-panel" class="panel settings-panel live-page-only"/);
+  assert.match(html, /action\('\/api\/strategy-start'/);
 });
 
 test('normalizes common proxy formats', () => {
@@ -417,6 +467,16 @@ test('bot starts long and short grids with only the submitted opening side', asy
 
     await bot.stop({ closePosition: false });
   }
+});
+
+test('bot preserves the named strategy id in its runtime configuration', async () => {
+  const exchange = fakeLiveExchange();
+  const bot = new GridBot(exchange);
+  await bot.start({ ...gridConfig(), strategyId: 'range_balanced' });
+  assert.equal(bot.config.strategyId, 'range_balanced');
+  assert.equal(bot.snapshot().config.strategyId, 'range_balanced');
+  assert.equal(bot.getState().measurement.params.strategyId, 'range_balanced');
+  await bot.stop({ closePosition: false });
 });
 
 test('daily PnL tracks the selected timezone day and avoids duplicate sends', () => {

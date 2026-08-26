@@ -21,6 +21,7 @@ import { loadAiSettings, updateAiSettings, publicAiSettings } from './ai/setting
 import { createAiService } from './ai/service.js';
 import { aiAutopilotAllowedInMode, completeAiAutopilotAction, evaluateAiAutopilot } from './ai/autopilot.js';
 import { projectDashboardState, resolveDashboardRoute } from './dashboard-routing.js';
+import { buildStrategyProfileParams, listStrategyProfiles, resolveStrategyProfile } from './strategy-profiles.js';
 
 const cfg = getConfig();
 const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(cfg.host.toLowerCase());
@@ -31,7 +32,7 @@ const liveRisk = new LiveRiskState(ROOT, cfg.riskPolicy);
 const AUTO_REBALANCE_FILE = path.join(ROOT, '.auto-rebalance.json');
 const AI_AUTOPILOT_FILE = path.join(ROOT, '.ai-autopilot.json');
 const AI_AUTOPILOT_CONFLICTING_ACTIONS = new Set([
-  '/api/start', '/api/stop', '/api/adjust', '/api/paper-equity', '/api/cancel-orders',
+  '/api/start', '/api/strategy-start', '/api/stop', '/api/adjust', '/api/paper-equity', '/api/cancel-orders',
   '/api/close-position', '/api/start-recovery', '/api/reconnect', '/api/restart',
 ]);
 let lastPreflight = null;
@@ -104,6 +105,7 @@ const server = http.createServer(async (request, response) => {
     '/trend': '/api/trend',
     '/state': '/api/state',
     '/start': '/api/start',
+    '/strategy-start': '/api/strategy-start',
     '/stop': '/api/stop',
     '/adjust': '/api/adjust',
     '/reset': '/api/reset',
@@ -276,6 +278,24 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (url.pathname === '/api/strategy-profiles') {
+      const runtimeMode = requestedConsoleMode(url) || cfg.decibel.mode;
+      return send(response, 200, {
+        runtimeMode,
+        profiles: listStrategyProfiles({ runtimeMode, aiConfigured: Boolean(getAiConfig().apiKey) }),
+      });
+    }
+
+    if (url.pathname === '/api/strategy-preview') {
+      const requestedMode = requestedConsoleMode(url);
+      if (requestedMode && requestedMode !== cfg.decibel.mode) {
+        return send(response, 409, { error: '页面与服务模式不一致，不能读取另一模式的账户策略预览。' });
+      }
+      const strategyId = url.searchParams.get('strategyId');
+      const marketId = positiveNumber(url.searchParams.get('marketId'), 1);
+      return send(response, 200, await buildNamedStrategyPreview(strategyId, marketId));
+    }
+
     if (url.pathname === '/api/preflight') {
       if (request.method === 'POST') return send(response, 200, await runPreflight());
       return send(response, 200, lastPreflight || { ready: false, t: null, checks: [], message: '尚未运行实盘预检。' });
@@ -369,12 +389,20 @@ const server = http.createServer(async (request, response) => {
       }, url.pathname);
     }
 
+    if (url.pathname === '/api/strategy-start' && request.method === 'POST') {
+      return runAction(response, async () => activateNamedStrategy(await readBody(request)), url.pathname);
+    }
     if (url.pathname === '/api/start' && request.method === 'POST') {
-      return runAction(response, async () => startGrid(await readBody(request)), url.pathname);
+      return runAction(response, async () => {
+        const body = await readBody(request);
+        await disableAiAutopilot('已选择固定策略，AI 自动轮动已关闭');
+        return startGrid(body);
+      }, url.pathname);
     }
     if (url.pathname === '/api/stop' && request.method === 'POST') {
       return runAction(response, async () => {
         const body = await readBody(request);
+        await disableAiAutopilot('已人工停止网格，AI 自动轮动已关闭');
         const result = await bot.stop(body);
         await refreshPaperReadiness();
         audit.write('grid_stopped', { closePosition: body.closePosition !== false, state: compactState(result) });
@@ -420,6 +448,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (url.pathname === '/api/cancel-orders' && request.method === 'POST') {
       return runAction(response, async () => {
+        await disableAiAutopilot('已人工撤销挂单，AI 自动轮动已关闭');
         const result = await bot.cancelAllOrders();
         audit.write('orders_cancelled', { state: compactState(result) }, 'warn');
         await notifySafe('GridPilot 已撤销全部网格挂单，当前持仓保留。');
@@ -435,6 +464,7 @@ const server = http.createServer(async (request, response) => {
             throw new Error(`实盘平仓确认短语不正确，应输入：CLOSE ${market.displayName}`);
           }
         }
+        await disableAiAutopilot('已人工平仓，AI 自动轮动已关闭');
         const result = await bot.closePositionNow(body.marketId);
         audit.write('position_closed', { marketId: body.marketId, state: compactState(result) }, 'warn');
         await notifySafe('GridPilot 已执行撤单和平仓，请到 Decibel 再次核对。');
@@ -450,6 +480,7 @@ const server = http.createServer(async (request, response) => {
             throw new Error(`实盘回收确认短语不正确，应输入：RECOVER ${market.displayName}`);
           }
         }
+        await disableAiAutopilot('已人工启动回收策略，AI 自动轮动已关闭');
         delete body.liveConfirmation;
         const result = await bot.startRecovery(body);
         audit.write('recovery_started', { marketId: body.marketId, spacing: body.spacing, sizeBase: body.sizeBase, aboveEntryOnly: !!body.aboveEntryOnly }, 'warn');
@@ -461,6 +492,7 @@ const server = http.createServer(async (request, response) => {
       return runAction(response, async () => {
         const body = await readBody(request);
         if (body.confirmation !== 'EMERGENCY STOP') throw new Error('紧急停止确认短语不正确。');
+        await disableAiAutopilot('已人工紧急停止，AI 自动轮动已关闭');
         await emergencyStop('用户手动触发紧急停止');
         return publicState();
       }, url.pathname);
@@ -589,6 +621,166 @@ function validateStartup() {
     for (const item of errors) console.error('  - ' + item);
     process.exit(1);
   }
+}
+
+async function buildNamedStrategyPreview(strategyId, marketId, { allowExistingPosition = false } = {}) {
+  const aiConfig = getAiConfig();
+  const profile = resolveStrategyProfile(strategyId, {
+    runtimeMode: cfg.decibel.mode,
+    aiConfigured: Boolean(aiConfig.apiKey),
+  });
+  const markets = await exchange.getMarkets();
+  const requestedId = Number(marketId);
+  const market = markets.find((item) => Number(item.marketId) === requestedId)
+    || markets.find((item) => String(item.displayName || '').toUpperCase() === 'BTC-USD');
+  if (!market) throw new Error('BTC-USD 市场不存在，请刷新市场列表。');
+
+  await exchange.refreshPositions?.();
+  const state = bot.getState();
+  const price = Number(await exchange.getPrice(market.marketId));
+  if (!(price > 0)) throw new Error('未能获取有效的 BTC 最新价格，无法生成策略参数。');
+  const candles = await exchange.getCandles(market.marketId, 3600, 200);
+  const analysis = candles.length >= 20 ? analyzeTrend(candles) : { atrPct: null, trend: 'range', detail: 'K 线不足，使用保守波动率。' };
+  const suggestion = suggestAdaptiveGrid({
+    price,
+    atrPct: analysis.atrPct,
+    equity: state.equity,
+    market,
+    trend: analysis.trend,
+  });
+  const params = buildStrategyProfileParams({
+    strategyId: profile.id,
+    suggestion,
+    marketId: market.marketId,
+    runtimeMode: cfg.decibel.mode,
+    aiConfigured: Boolean(aiConfig.apiKey),
+  });
+  const existingPosition = exchange.getPosition?.(market.marketId) || null;
+  const strategyCheck = evaluateStrategyParams({ params, market, strategy: cfg.decibel.strategy || BTC_GRID_STRATEGY });
+  const riskCheck = evaluateStartRisk({
+    params,
+    market,
+    equity: state.equity,
+    policy: cfg.riskPolicy,
+    existingPosition,
+    currentPrice: price,
+  });
+  let preflight = null;
+  try { preflight = await exchange.preflight?.(); } catch { /* reflected by the residual order check below */ }
+  const positionSize = Math.abs(Number(existingPosition?.sizeBase) || 0);
+  const exchangeOrders = Number(preflight?.openOrderCount ?? state.exchangeOpenOrders ?? 0);
+  const accountClean = !state.recovery
+    && Number(state.openOrders || 0) === 0
+    && exchangeOrders === 0
+    && (allowExistingPosition || positionSize === 0);
+  const checks = [
+    { id: 'market', label: '市场', status: strategyCheck.ok ? 'pass' : 'fail', detail: strategyCheck.ok ? market.displayName : strategyCheck.errors.join(' ') },
+    { id: 'price', label: '最新价格', status: price > 0 ? 'pass' : 'fail', detail: `${price} · ${exchange.dataSource || 'unknown'}` },
+    { id: 'adaptive', label: '自动参数', status: 'pass', detail: `ATR ${suggestion.atrPct}% · ${params.gridCount} 格 · ${params.leverage}x` },
+    { id: 'risk', label: '保证金和风险', status: riskCheck.ok ? 'pass' : 'fail', detail: riskCheck.ok ? `预计 ${riskCheck.metrics.requiredMargin} USDC，占权益 ${riskCheck.metrics.marginPct}%` : riskCheck.errors.join(' ') },
+    { id: 'orders', label: '仓位与遗留状态', status: accountClean ? 'pass' : 'fail', detail: accountClean ? (positionSize > 0 ? '现有仓位已纳入重新建网格计算' : '无持仓、遗留挂单或恢复状态') : '请先处理现有仓位、挂单或恢复状态' },
+    { id: 'running', label: '网格状态', status: state.running ? 'fail' : 'pass', detail: state.running ? '已有网格正在运行，请先停止' : '未运行，可以启动' },
+  ];
+  if (cfg.decibel.mode === 'live') {
+    const preflightReady = !cfg.requireFreshPreflight || (lastPreflight?.ready && Date.now() - lastPreflight.t <= 5 * 60_000);
+    checks.push({ id: 'preflight', label: '实盘预检', status: preflightReady ? 'pass' : 'fail', detail: preflightReady ? '预检有效' : '请先完成实盘预检' });
+  }
+  return {
+    mode: cfg.decibel.mode,
+    profile,
+    market: market.displayName,
+    dataSource: exchange.dataSource || null,
+    generatedAt: Date.now(),
+    price,
+    analysis: { trend: analysis.trend || 'range', atrPct: suggestion.atrPct, detail: analysis.detail || null },
+    params,
+    strategyCheck,
+    riskCheck,
+    accountClean,
+    checks,
+    ready: checks.every((check) => check.status !== 'fail'),
+    autoRebalance: autoRebalancePublicState(),
+    lastAutoRebalance: lastAutoRebalanceStatus,
+    rationale: suggestion.rationale,
+  };
+}
+
+async function activateNamedStrategy(body = {}) {
+  const marketId = positiveNumber(body.marketId, 1);
+  const profile = resolveStrategyProfile(body.strategyId, {
+    runtimeMode: cfg.decibel.mode,
+    aiConfigured: Boolean(getAiConfig().apiKey),
+  });
+  const preview = await buildNamedStrategyPreview(profile.id, marketId, { allowExistingPosition: body.allowExistingPosition === true });
+  if (!preview.ready) {
+    const errors = preview.checks.filter((check) => check.status === 'fail').map((check) => check.detail);
+    throw new Error(errors.join(' '));
+  }
+
+  if (profile.id === 'ai_rotation') {
+    await enableAiAutopilot();
+    audit.write('named_strategy_activated', { strategyId: profile.id, market: preview.market, mode: cfg.decibel.mode });
+    let initialAnalysis = null;
+    let initialAnalysisError = null;
+    try {
+      initialAnalysis = await aiService.analyze(marketId);
+      await maybeApplyAiAutopilot(initialAnalysis);
+    } catch (error) {
+      initialAnalysisError = error?.message || String(error);
+      aiAutopilotState = { ...aiAutopilotState, lastReason: 'analysis_failed', lastMessage: `首次分析失败，将按计划重试：${initialAnalysisError}` };
+      saveAiAutopilotState();
+    }
+    return {
+      ...publicState(),
+      strategyActivation: {
+        strategyId: profile.id,
+        message: initialAnalysisError ? aiAutopilotState.lastMessage : 'AI 趋势轮动已启用，等待连续行情确认。',
+        initialAnalysis: initialAnalysis ? { regime: initialAnalysis.regime, confidence: initialAnalysis.confidence } : null,
+      },
+    };
+  }
+
+  await disableAiAutopilot('已选择固定策略，AI 自动轮动已关闭');
+  const params = {
+    ...preview.params,
+    allowExistingPosition: body.allowExistingPosition === true,
+    liveConfirmation: body.liveConfirmation,
+  };
+  const result = await startGrid(params);
+  audit.write('named_strategy_activated', { strategyId: profile.id, market: preview.market, mode: cfg.decibel.mode });
+  return result;
+}
+
+async function enableAiAutopilot() {
+  const config = getAiConfig();
+  if (!aiAutopilotAllowedInMode(cfg.decibel.mode)) throw new Error('AI 趋势轮动仅允许 PAPER 模拟盘。');
+  if (!config.apiKey) throw new Error('请先在 AI 助手中配置并测试 API Key。');
+  updateAiSettings(ROOT, {
+    provider: config.provider,
+    autopilotEnabled: true,
+    marketMinutes: config.marketMinutes > 0 ? config.marketMinutes : 30,
+  });
+  aiAutopilotState = {
+    ...aiAutopilotState,
+    candidate: null,
+    candidateCount: 0,
+    lastReason: 'waiting',
+    lastMessage: 'AI 趋势轮动已启用，等待行情分析',
+  };
+  saveAiAutopilotState();
+}
+
+async function disableAiAutopilot(message) {
+  const config = getAiConfig();
+  if (config.autopilotEnabled) updateAiSettings(ROOT, { provider: config.provider, autopilotEnabled: false });
+  aiAutopilotState = {
+    ...aiAutopilotState,
+    candidate: null,
+    candidateCount: 0,
+    lastReason: 'disabled',
+    lastMessage: message || 'AI 自动策略已关闭',
+  };
+  saveAiAutopilotState();
 }
 
 async function startGrid(body) {
@@ -807,6 +999,7 @@ function aiAutopilotPublicState() {
   else if (!config.apiKey) message = '尚未配置 AI API Key';
   else if (!(config.marketMinutes > 0)) message = 'AI 行情分析间隔已关闭';
   return {
+    strategyId: enabled ? 'ai_rotation' : null,
     enabled,
     effective,
     intervalMinutes: config.marketMinutes,
@@ -1139,11 +1332,11 @@ async function executeAiAutopilot(target, analysis) {
     throw new Error('空闲账户仍有仓位或挂单，禁止自动接管。');
   }
 
-  const params = await buildAiAutopilotParams(target, analysis, before);
+  let params = await buildAiAutopilotParams(target, analysis, before);
   if (before.running) {
     const stopped = await bot.stop({ closePosition: true });
     ensureAutopilotAccountClean(stopped);
-    await validateAiAutopilotParams(params);
+    params = await buildAiAutopilotParams(target, analysis, bot.getState());
   }
   const started = await bot.start(params);
   return {
@@ -1168,18 +1361,18 @@ async function buildAiAutopilotParams(target, analysis, state) {
     market,
     trend: trend.trend,
   });
-  const previous = state.config || {};
   const params = {
     marketId: market.marketId,
+    strategyId: 'ai_rotation',
     mode: target,
     lower: suggested.lower,
     upper: suggested.upper,
-    gridCount: Number(previous.gridCount) || suggested.gridCount,
-    sizeBase: Number(previous.sizeBase) || suggested.sizeBase,
-    leverage: Number(previous.leverage) || suggested.leverage,
-    outOfRangeAction: previous.outOfRangeAction === 'recover' ? 'recover' : 'close',
-    maxDirectionalNotionalPct: Number(previous.maxDirectionalNotionalPct) || suggested.maxDirectionalNotionalPct,
-    trendGuardEnabled: previous.trendGuardEnabled !== false,
+    gridCount: suggested.gridCount,
+    sizeBase: suggested.sizeBase,
+    leverage: suggested.leverage,
+    outOfRangeAction: suggested.outOfRangeAction,
+    maxDirectionalNotionalPct: suggested.maxDirectionalNotionalPct,
+    trendGuardEnabled: suggested.trendGuardEnabled,
   };
   await validateAiAutopilotParams(params, market, price);
   return params;
@@ -1314,6 +1507,7 @@ function compactState(state) {
   return {
     running: state.running,
     market: state.config?.displayName || null,
+    strategyId: state.config?.strategyId || null,
     mode: state.config?.mode || null,
     openOrders: state.openOrders,
     positionSize: state.position?.sizeBase || 0,

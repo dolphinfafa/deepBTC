@@ -267,6 +267,7 @@ export class GridBot {
     const sizeBase = Math.max(Number(cfg.sizeBase), market.minOrderSize || 0);
     this.config = {
       marketId: market.marketId, displayName: market.displayName,
+      strategyId: cfg.strategyId || null,
       mode: cfg.mode || 'neutral',
       lower: Number(cfg.lower), upper: Number(cfg.upper),
       gridCount: Number(cfg.gridCount), sizeBase, leverage,
@@ -1492,6 +1493,7 @@ function parameterSnapshot(config) {
   return {
     marketId: config.marketId,
     displayName: config.displayName,
+    strategyId: config.strategyId || null,
     mode: config.mode,
     lower: config.lower,
     upper: config.upper,
