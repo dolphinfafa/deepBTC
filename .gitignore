@@ -21,10 +21,16 @@
 .auto-rebalance.json
 .auto-rebalance.json.tmp
 .ai-autopilot.json
+.paper-instances.json
 .ai-autopilot.json.tmp
+
+# 本地导入的账户成交/调参研究样本
+Decibel.json
+decibel.json
 
 # 依赖缓存
 node_modules/
+.cache/
 
 # 日志（可能含代理账号、出口 IP 等）
 *.log

@@ -51,3 +51,20 @@ export function saveSnapshot(key, snapshot) {
   }, 500);
   saveTimer.unref?.();
 }
+
+/** Remove one stopped bot snapshot without disturbing other instances. */
+export function deleteSnapshot(key) {
+  const state = loadState();
+  delete state[key];
+  cache = state;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      const tmp = STATE_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
+      fs.renameSync(tmp, STATE_FILE);
+    } catch { /* persistence must never crash trading */ }
+  }, 0);
+  saveTimer.unref?.();
+}

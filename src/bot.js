@@ -13,6 +13,7 @@ import {
   inventoryOrderDecision,
   isPassiveOpeningOrder,
 } from './strategy-guards.js';
+import { NEUTRAL_GRID_DEFAULTS, readNeutralRangeAdmission } from './neutral-grid.js';
 
 const RECONCILE_MS = 30000;   // periodic open-order reconciliation cadence
 const PRUNE_GRACE_MS = 20000; // don't prune a tracked order younger than this
@@ -21,6 +22,7 @@ export class GridBot {
   constructor(exchange, opts = {}) {
     this.ex = exchange;
     this.running = false;
+    this.waitingForAdmission = false;
     this.config = null;
     this.grid = null;
     this.active = new Map();        // orderId -> {levelIndex, side, price, opening, placedAt}
@@ -99,7 +101,8 @@ export class GridBot {
   /** Durable snapshot for crash recovery / resume. Includes resting orders. */
   snapshot() {
     return {
-      running: this.running, config: this.config, stats: this.stats,
+      running: this.running, waitingForAdmission: this.waitingForAdmission,
+      config: this.config, stats: this.stats,
       recovery: this.recovery, pnlBase: this._pnlBase,
       unrealizedBase: this._unrealizedBase, costBase: this._costBase,
       measurement: this.measurement, measurementHistory: this.measurementHistory,
@@ -120,6 +123,7 @@ export class GridBot {
   restore(snap) {
     if (!snap || !snap.config) return;
     this.config = withGuardDefaults(snap.config);
+    this.waitingForAdmission = false;
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0, ...(snap.stats || {}) };
     this.startBalance = snap.startBalance ?? null;
     this._pnlBase = snap.pnlBase ?? null;
@@ -147,6 +151,7 @@ export class GridBot {
     if (snap.recovery || snap.config.mode === 'recovery') return this._resumeRecovery(snap, restoreContext);
     if (!Array.isArray(snap.active)) throw new Error('无可恢复的运行中网格快照');
     this.config = withGuardDefaults(snap.config);
+    this.waitingForAdmission = snap.waitingForAdmission === true;
     this.stats = { buys: 0, sells: 0, completedRungs: 0, gridProfit: 0, volume: 0, ...(snap.stats || {}) };
     this.startBalance = snap.startBalance ?? null;
     this._pnlBase = snap.pnlBase ?? null;
@@ -189,7 +194,9 @@ export class GridBot {
     this._startReconcileTimer();
     this._startGuardTimer();
     this._refreshTrendGuard(true).catch(() => {});
-    this._alert(`已恢复运行中的 ${this.config.displayName} ${labelMode(this.config.mode)}：接管 ${this.active.size} 个挂单，正在与交易所对账…`);
+    this._alert(this.waitingForAdmission
+      ? `已恢复 ${this.config.displayName} ${labelMode(this.config.mode)}：策略保持启动，继续等待震荡准入。`
+      : `已恢复运行中的 ${this.config.displayName} ${labelMode(this.config.mode)}：接管 ${this.active.size} 个挂单，正在与交易所对账…`);
     this.reconcileOpenOrders().catch(() => {}); // immediate reconcile
     this._changed();
     return this.getState();
@@ -277,6 +284,12 @@ export class GridBot {
       trendGuardEnabled: cfg.trendGuardEnabled !== false,
       trendGuardMinStrength: bounded(cfg.trendGuardMinStrength, 0, 1, STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength),
       trendGuardRefreshMs: bounded(cfg.trendGuardRefreshMs, 60_000, 60 * 60_000, STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs),
+      neutralRangeAdmissionEnabled: cfg.neutralRangeAdmissionEnabled === true,
+      rangeAdmissionMinAtrPct: bounded(cfg.rangeAdmissionMinAtrPct, 0.05, 10, NEUTRAL_GRID_DEFAULTS.rangeAdmissionMinAtrPct),
+      inventorySkewEnabled: cfg.inventorySkewEnabled === true,
+      inventorySkewStartPctOfCap: bounded(cfg.inventorySkewStartPctOfCap, 0, 95, NEUTRAL_GRID_DEFAULTS.inventorySkewStartPctOfCap),
+      inventorySkewMinScale: bounded(cfg.inventorySkewMinScale, 0.05, 1, NEUTRAL_GRID_DEFAULTS.inventorySkewMinScale),
+      minRoundTripCostMultiple: bounded(cfg.minRoundTripCostMultiple, 1, 10, NEUTRAL_GRID_DEFAULTS.costCoverageMultiple),
       stepSize: market.stepSize, stepPrice: market.stepPrice,
       minOrderSize: market.minOrderSize,
       maxLeverage: market.maxLeverage,
@@ -286,6 +299,7 @@ export class GridBot {
     this._refillPausedUntil = 0; this._cancelTimes = []; // fresh start clears any back-off
     this._retryQueue = []; this._noPosStreak = 0;
     this._guardDeferred.clear();
+    this.waitingForAdmission = false;
     this.recovery = false;
 
     // record the starting equity up front (margin pre-check, returnPct, recovery)
@@ -315,7 +329,11 @@ export class GridBot {
       ? (Number(this.ex.slippageBps || 0) + Number(this.ex.spreadBps || 0)) / 10_000
       : 0;
     const roundTripCostPct = (feeRate + simulatedFrictionRate) * 2 * 100;
-    if (this.risk.spacingPct <= roundTripCostPct) {
+    const requiredCostCoveragePct = roundTripCostPct * this.config.minRoundTripCostMultiple;
+    if (this.config.mode === 'neutral' && this.config.neutralRangeAdmissionEnabled
+        && this.risk.spacingPct + 1e-8 < requiredCostCoveragePct) {
+      throw new Error(`中性网格间距 ${this.risk.spacingPct}% 未达到预计往返执行损耗 ${round2(roundTripCostPct)}% 的 ${this.config.minRoundTripCostMultiple} 倍保护，已取消启动。`);
+    } else if (this.risk.spacingPct <= roundTripCostPct) {
       this._alert(`⚠️ 网格间距 ${this.risk.spacingPct}% 不足以覆盖预计往返执行损耗（约 ${round2(roundTripCostPct)}%），每完成一格可能亏损。建议拉大间距或减少网格数。`);
     }
 
@@ -339,13 +357,21 @@ export class GridBot {
     this.outOfRange = this.lastPrice < this.config.lower || this.lastPrice > this.config.upper;
 
     await this._refreshTrendGuard(true);
+    const admissionRequired = this.config.mode === 'neutral' && this.config.neutralRangeAdmissionEnabled;
+    const admissionAllowed = this.strategyGuard.rangeAdmission?.allowed === true;
+    if (admissionRequired && !admissionAllowed && this.ex.mode === 'live') {
+      throw new Error(`当前不满足中性网格准入：${this.strategyGuard.rangeAdmission?.detail || '1D/4H 尚未共同确认宽幅震荡。'}`);
+    }
+    this.waitingForAdmission = admissionRequired && !admissionAllowed;
 
     this.ex.on('fill', this._onFill);
     this.ex.on('price', this._onPrice);
     if (typeof this.ex.start === 'function') this.ex.start();
 
     // ---- seed the ladder (every seed order is an OPENING leg) ----
-    const seeds = seedOrders({ levels: this.grid.levels, price: this.lastPrice, mode: this.config.mode, spacing: this.grid.spacing });
+    const seeds = this.waitingForAdmission
+      ? []
+      : seedOrders({ levels: this.grid.levels, price: this.lastPrice, mode: this.config.mode, spacing: this.grid.spacing });
     let placed = 0;
     for (const s of seeds) if (await this._place({ ...s, opening: true })) placed++;
     if (this.ex.mode === 'live' && placed !== seeds.length) {
@@ -362,7 +388,9 @@ export class GridBot {
     this.running = true;
     this._startReconcileTimer();
     this._startGuardTimer();
-    this._alert(`已启动 ${this.config.displayName} ${labelMode(this.config.mode)}，${this.grid.count} 格，间距 ${this.grid.spacing}（${this.risk.spacingPct}%），杠杆 ${leverage}x，挂出 ${this.active.size} 单。`);
+    this._alert(this.waitingForAdmission
+      ? `已启动 ${this.config.displayName} ${labelMode(this.config.mode)}，当前等待震荡准入，暂不挂单：${this.strategyGuard.rangeAdmission?.detail || '大周期尚未共同确认震荡。'}`
+      : `已启动 ${this.config.displayName} ${labelMode(this.config.mode)}，${this.grid.count} 格，间距 ${this.grid.spacing}（${this.risk.spacingPct}%），杠杆 ${leverage}x，挂出 ${this.active.size} 单。`);
     this._changed();
     return this.getState();
   }
@@ -381,6 +409,7 @@ export class GridBot {
       }
       this.active.clear();
       this._guardDeferred.clear();
+      this.waitingForAdmission = false;
       this._retryQueue = [];
       this._changed();
       return this.getState();
@@ -398,6 +427,7 @@ export class GridBot {
       closeRequested = true;
     }
     this.running = false;
+    this.waitingForAdmission = false;
     this.recovery = false;
     this._retryQueue = [];
     this._alert(closeRequested
@@ -424,6 +454,7 @@ export class GridBot {
     this.active.clear();
     this._guardDeferred.clear();
     this.running = false;
+    this.waitingForAdmission = false;
     this._refillPausedUntil = 0; this._cancelTimes = []; this._retryQueue = [];
     this._alert(cancelled === false
       ? '❌ 撤单未完全确认，自动网格已停止，持仓保留。请立即到交易所人工核对剩余挂单。'
@@ -437,7 +468,7 @@ export class GridBot {
    * the new range; if it passes, current orders are cancelled and the ladder is
    * re-seeded around the live price. The open POSITION is left untouched.
    */
-  async adjustRange({ lower, upper, measurementReason = 'range_adjustment' }) {
+  async adjustRange({ lower, upper, gridCount, sizeBase, leverage, measurementReason = 'range_adjustment' }) {
     if (!this.running || !this.config) throw new Error('网格未在运行，无法调整区间。');
     const lo = Number(lower), hi = Number(upper);
     if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) throw new Error('上边界必须大于下边界。');
@@ -445,28 +476,46 @@ export class GridBot {
     if (Number.isFinite(price) && (price < lo * 0.5 || price > hi * 2)) {
       throw new Error(`新区间 [${lo}, ${hi}] 与当前价 ${round2(price)} 偏离过大，已取消调整。`);
     }
-    const newGrid = buildGrid({ lower: lo, upper: hi, gridCount: this.config.gridCount });
+    const nextGridCount = gridCount == null ? this.config.gridCount : Number(gridCount);
+    const nextSizeBase = sizeBase == null ? this.config.sizeBase : Number(sizeBase);
+    const nextLeverage = leverage == null ? this.config.leverage : Number(leverage);
+    if (!(nextSizeBase > 0)) throw new Error('每格数量必须大于 0。');
+    if (!(nextLeverage >= 1)) throw new Error('杠杆必须至少为 1x。');
+    const newGrid = buildGrid({ lower: lo, upper: hi, gridCount: nextGridCount });
     const mid = (lo + hi) / 2;
-    const notional = newGrid.levels.length * this.config.sizeBase * mid;
-    const requiredMargin = notional / this.config.leverage;
+    const notional = newGrid.levels.length * nextSizeBase * mid;
+    const requiredMargin = notional / nextLeverage;
     const available = typeof this.ex.equity === 'number' ? this.ex.equity
       : typeof this.ex.balance === 'number' ? this.ex.balance : null;
     if (available != null && requiredMargin > available) {
       throw new Error(`保证金不足以支持新区间：约需 ${round2(requiredMargin)} USDC，当前可用 ${round2(available)} USDC。请缩小区间/减少格数后再试。`);
     }
 
-    const cancelled = await this._cancelAllTracked('调整区间撤销旧挂单');
+    if (nextLeverage !== this.config.leverage) {
+      const leverageOk = await this.ex.setLeverage(this.config.marketId, nextLeverage).catch(() => false);
+      if (leverageOk === false && this.ex.mode === 'live') throw new Error(`Decibel 杠杆设置 ${nextLeverage}x 未成功，已取消参数更新。`);
+      if (leverageOk === false) this._alert(`⚠️ 杠杆设置 ${nextLeverage}x 未生效，将沿用交易所端当前杠杆。`);
+    }
+
+    const cancelled = await this._cancelAllTracked('自动参数更新撤销旧挂单');
     if (cancelled === false) {
       throw new Error('未能确认撤销旧区间挂单，已取消调整，避免新旧网格叠加。请到 Decibel 核对。');
     }
     this.active.clear();
     this._guardDeferred.clear();
     this._refillPausedUntil = 0; this._cancelTimes = []; // user re-set the range: clear back-off
-    this.config = { ...this.config, lower: lo, upper: hi };
+    this.config = {
+      ...this.config,
+      lower: lo,
+      upper: hi,
+      gridCount: nextGridCount,
+      sizeBase: nextSizeBase,
+      leverage: nextLeverage,
+    };
     this.grid = newGrid;
     this._recomputeRisk();
     this.outOfRange = Number.isFinite(price) ? (price < lo || price > hi) : false;
-    if (!this.outOfRange && Number.isFinite(price) && price > 0) {
+    if (!this.waitingForAdmission && !this.outOfRange && Number.isFinite(price) && price > 0) {
       const seeds = seedOrders({ levels: newGrid.levels, price, mode: this.config.mode, spacing: newGrid.spacing });
       let placed = 0;
       for (const s of seeds) if (await this._place({ ...s, opening: true })) placed++;
@@ -484,7 +533,9 @@ export class GridBot {
       }
     }
     this._beginMeasurement(measurementReason);
-    this._alert(`已调整区间为 [${lo}, ${hi}]，${newGrid.count} 格，间距 ${newGrid.spacing}（${this.risk.spacingPct}%），重新挂出 ${this.active.size} 单（持仓保留）。`);
+    this._alert(this.waitingForAdmission
+      ? `已更新等待准入参数：[${lo}, ${hi}]，${newGrid.count} 格，每格 ${round6(nextSizeBase)}，${nextLeverage}x；条件满足前继续保持零挂单。`
+      : `已更新策略参数：[${lo}, ${hi}]，${newGrid.count} 格，每格 ${round6(nextSizeBase)}，${nextLeverage}x，重新挂出 ${this.active.size} 单（持仓保留）。`);
     this._changed();
     return this.getState();
   }
@@ -606,8 +657,16 @@ export class GridBot {
 
   async _refreshTrendGuard(force = false) {
     if (!this.config || this.recovery) return this.strategyGuard;
-    if (!this.config.trendGuardEnabled) {
-      this.strategyGuard = { ...this.strategyGuard, enabled: false, trend: 'range', strength: 0, reason: 'disabled' };
+    const needsAdmission = this.config.mode === 'neutral' && this.config.neutralRangeAdmissionEnabled;
+    if (!this.config.trendGuardEnabled && !needsAdmission) {
+      this.strategyGuard = {
+        ...this.strategyGuard,
+        enabled: false,
+        trend: 'range',
+        strength: 0,
+        reason: 'disabled',
+        rangeAdmission: { enabled: false, allowed: true, reason: 'disabled', detail: '中性准入未开启。' },
+      };
       return this.strategyGuard;
     }
     const refreshMs = this.config.trendGuardRefreshMs || STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs;
@@ -615,21 +674,35 @@ export class GridBot {
     if (this._guardRefreshInFlight) return this._guardRefreshInFlight;
     this._guardRefreshInFlight = (async () => {
       try {
-        const candles = await this.ex.getCandles(this.config.marketId, 3600, 200);
-        const synthetic = this.ex.candleDataSource === 'synthetic';
-        const analysis = synthetic
-          ? { trend: 'range', strength: 0, detail: '真实 K 线不可用，趋势保护保持中性。' }
-          : analyzeTrend(Array.isArray(candles) ? candles : []);
+        let admission = { enabled: false, allowed: true, reason: 'not_required', detail: '当前方向不需要中性准入。' };
+        let analysis;
+        if (needsAdmission) {
+          admission = await readNeutralRangeAdmission({
+            exchange: this.ex,
+            marketId: this.config.marketId,
+            currentAllowed: this.strategyGuard.rangeAdmission?.allowed === true,
+            minAtrPct: this.config.rangeAdmissionMinAtrPct,
+            trendStrength: this.config.trendGuardMinStrength,
+          });
+          analysis = admission.frames?.h1 || { trend: 'range', strength: 0, detail: admission.detail };
+        } else {
+          const candles = await this.ex.getCandles(this.config.marketId, 3600, 200);
+          const synthetic = this.ex.candleDataSource === 'synthetic';
+          analysis = synthetic
+            ? { trend: 'range', strength: 0, detail: '真实 K 线不可用，趋势保护保持中性。' }
+            : analyzeTrend(Array.isArray(candles) ? candles : []);
+        }
         this.strategyGuard = {
           ...this.strategyGuard,
-          enabled: true,
+          enabled: this.config.trendGuardEnabled,
           trend: analysis.trend || 'range',
           strength: Number(analysis.strength) || 0,
           minStrength: this.config.trendGuardMinStrength,
           checkedAt: Date.now(),
-          dataSource: this.ex.candleDataSource || this.ex.dataSource || null,
+          dataSource: needsAdmission ? admission.sources : (this.ex.candleDataSource || this.ex.dataSource || null),
           reason: analysis.detail || null,
           error: null,
+          rangeAdmission: admission,
         };
         if (this.running) this._scheduleGuardSync();
       } catch (error) {
@@ -638,7 +711,11 @@ export class GridBot {
           enabled: true,
           checkedAt: Date.now(),
           error: error?.message || String(error),
+          rangeAdmission: needsAdmission
+            ? { enabled: true, allowed: false, reason: 'data_unavailable', detail: '大周期行情读取失败，暂停中性开仓。' }
+            : this.strategyGuard.rangeAdmission,
         };
+        if (this.running) this._scheduleGuardSync();
       } finally {
         this._guardRefreshInFlight = null;
       }
@@ -648,7 +725,8 @@ export class GridBot {
   }
 
   _startGuardTimer() {
-    if (this._guardTimer || !this.config?.trendGuardEnabled) return;
+    const needsAdmission = this.config?.mode === 'neutral' && this.config?.neutralRangeAdmissionEnabled;
+    if (this._guardTimer || (!this.config?.trendGuardEnabled && !needsAdmission)) return;
     const interval = this.config.trendGuardRefreshMs || STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs;
     this._guardTimer = setInterval(() => this._refreshTrendGuard(true).catch(() => {}), interval);
     this._guardTimer.unref?.();
@@ -673,6 +751,14 @@ export class GridBot {
       trend: this.strategyGuard.trend,
       trendStrength: this.strategyGuard.strength,
       trendGuardMinStrength: this.config.trendGuardMinStrength,
+      mode: this.config.mode,
+      rangeAdmissionEnabled: this.config.neutralRangeAdmissionEnabled,
+      rangeAdmissionAllowed: this.strategyGuard.rangeAdmission?.allowed === true,
+      inventorySkewEnabled: this.config.inventorySkewEnabled,
+      inventorySkewStartPctOfCap: this.config.inventorySkewStartPctOfCap,
+      inventorySkewMinScale: this.config.inventorySkewMinScale,
+      stepSize: this.config.stepSize,
+      minOrderSize: this.config.minOrderSize,
     });
   }
 
@@ -682,6 +768,10 @@ export class GridBot {
 
   async _enforceStrategyGuards() {
     if (!this.running || !this.config || this.recovery) return;
+    if (this.waitingForAdmission) {
+      await this._enterAfterAdmission();
+      return;
+    }
     const replacements = [];
     for (const [id, info] of [...this.active]) {
       if (info.recovery || (!info.opening && !info.inventoryManaged)) continue;
@@ -692,7 +782,8 @@ export class GridBot {
       const desiredOpening = decision.allowed ? decision.opening : null;
       const alreadyClassified = decision.allowed
         && info.opening === desiredOpening
-        && Boolean(info.reduceOnly) === Boolean(decision.reduceOnly);
+        && Boolean(info.reduceOnly) === Boolean(decision.reduceOnly)
+        && Math.abs(Number(info.sizeBase) - Number(decision.sizeBase)) < Math.max(1e-12, Number(this.config.stepSize) / 2 || 1e-12);
       if (alreadyClassified) continue;
       try {
         await this.ex.cancelOrder?.(this.config.marketId, id);
@@ -744,6 +835,30 @@ export class GridBot {
       resumed++;
     }
     if (replacements.length || resumed) this._changed();
+  }
+
+  async _enterAfterAdmission() {
+    if (!this.waitingForAdmission || this.strategyGuard.rangeAdmission?.allowed !== true) return false;
+    const price = Number(this.lastPrice);
+    if (!(price > 0)) return false;
+    this.outOfRange = price < this.config.lower || price > this.config.upper;
+    if (this.outOfRange) return false;
+
+    const seeds = seedOrders({ levels: this.grid.levels, price, mode: this.config.mode, spacing: this.grid.spacing });
+    let placed = 0;
+    for (const seed of seeds) if (await this._place({ ...seed, opening: true })) placed++;
+    if (placed !== seeds.length) {
+      await this._cancelAllTracked('准入后初始挂单失败回滚');
+      this.active.clear();
+      this._guardDeferred.clear();
+      this._alert(`震荡准入已满足，但初始网格仅处理 ${placed}/${seeds.length} 单，将保持等待并在下次检查时重试。`);
+      this._changed();
+      return false;
+    }
+    this.waitingForAdmission = false;
+    this._alert(`震荡准入已满足，区间平衡自动入场，挂出 ${this.active.size} 个被动限价单。`);
+    this._changed();
+    return true;
   }
 
   _recordGuardBlock(decision, order) {
@@ -841,6 +956,7 @@ export class GridBot {
         const orderId = String(r.orderId);
         const placedPrice = Number(r.price ?? o.price);
         const placedSize = Number(r.sizeBase ?? sizeBase);
+        const inventoryManaged = !!o.inventoryManaged || (requestedOpening && !opening) || decision.inventorySkewApplied === true;
         this.active.set(orderId, {
           levelIndex: lvl,
           side: o.side,
@@ -848,8 +964,8 @@ export class GridBot {
           sizeBase: placedSize,
           opening,
           reduceOnly,
-          inventoryManaged: !!o.inventoryManaged || (requestedOpening && !opening),
-          managedOpeningSize: (!!o.inventoryManaged || (requestedOpening && !opening)) ? managedOpeningSize : null,
+          inventoryManaged,
+          managedOpeningSize: inventoryManaged ? managedOpeningSize : null,
           recovery: !!o.recovery,
           clientOrderId,
           placedAt: Date.now(),
@@ -897,6 +1013,7 @@ export class GridBot {
     const remainingSize = Number(f.remainingSize) > 1e-12 ? Number(f.remainingSize) : 0;
     if (remainingSize > 0 && act) {
       act.sizeBase = remainingSize;
+      if (act.inventoryManaged) act.managedOpeningSize = remainingSize;
       act.placedAt = Date.now();
     } else {
       this.active.delete(id);
@@ -949,6 +1066,16 @@ export class GridBot {
     this._scheduleGuardSync();
     if (this.recovery) { this._manageRecoveryStandalone(); return; }
     const out = p.price < this.config.lower || p.price > this.config.upper;
+    if (this.waitingForAdmission) {
+      if (out !== this.outOfRange) {
+        this.outOfRange = out;
+        this._alert(out
+          ? `等待准入期间价格已离开当前区间（${round2(p.price)}），策略继续运行并等待小时参数引擎更新区间，不执行平仓。`
+          : `等待准入期间价格已回到区间内（${round2(p.price)}），准入满足后将自动挂单。`);
+        this._changed();
+      }
+      return;
+    }
     const action = this.config.outOfRangeAction || 'close';
     if (out && !this.outOfRange) {
       this.outOfRange = true;
@@ -1222,6 +1349,23 @@ export class GridBot {
     // pruned as "idle" (adapters drop unwatched markets after 10 min).
     this.ex.getPrice?.(this.config.marketId)?.catch?.(() => {});
     this._drainRetryQueue();
+    if (this.waitingForAdmission) {
+      let waitingOrders;
+      try { waitingOrders = await this.ex.fetchOpenOrders(this.config.marketId); } catch { return; }
+      if (!Array.isArray(waitingOrders)) return;
+      this._exchangeOpenOrders = waitingOrders.length;
+      if (waitingOrders.length > 0) {
+        const cancelled = await this._cancelAllTracked('等待准入清理异常挂单');
+        if (cancelled !== false) {
+          this.active.clear();
+          this._guardDeferred.clear();
+          this._exchangeOpenOrders = 0;
+          this._alert('等待准入期间检测到异常挂单，已全部撤销，策略继续等待。');
+          this._changed();
+        }
+      }
+      return;
+    }
     const recovery = !!this.recovery;
     // Recovery has no grid: derive levels straight from price via config.spacing.
     const sp = recovery ? this.config.spacing : this.grid?.spacing;
@@ -1359,7 +1503,9 @@ export class GridBot {
     const priceStale = !!(ex._pxStale && this.config && typeof ex._pxStale.has === 'function' && ex._pxStale.has(this.config.marketId));
     const recentFail = this._lastFailAt && (Date.now() - this._lastFailAt < 60000);
     const paused = this._refillPausedUntil && Date.now() < this._refillPausedUntil;
-    let status = 'ok', reason = '正常运行';
+    let status = 'ok', reason = this.waitingForAdmission
+      ? `策略已启动，等待震荡准入：${this.strategyGuard.rangeAdmission?.detail || '条件检查中'}`
+      : '正常运行';
     if (!this.running && !this.config) { status = 'idle'; reason = '未运行'; }
     else if (ex.dataSource === 'synthetic') { status = 'warn'; reason = '合成行情（未连真实交易所）'; }
     else if (okAge != null && okAge > 30000) { status = 'error'; reason = `交易所数据 ${Math.round(okAge / 1000)}s 未更新`; }
@@ -1373,6 +1519,15 @@ export class GridBot {
       placeFails: this._placeFails,
       exchangeOpenOrders: this._exchangeOpenOrders,
     };
+  }
+
+  /** Detach local handlers when a stopped account switches strategy engines. */
+  dispose() {
+    this._stopReconcileTimer();
+    this._stopGuardTimer();
+    this.ex.off('fill', this._onFill);
+    this.ex.off('price', this._onPrice);
+    this.ex.off('error', this._onError);
   }
 
   getState() {
@@ -1422,6 +1577,8 @@ export class GridBot {
       ],
       buyReason: buyDecision && !buyDecision.allowed ? buyDecision.reason : null,
       sellReason: sellDecision && !sellDecision.allowed ? sellDecision.reason : null,
+      buySizeScale: buyDecision?.inventoryScale ?? 1,
+      sellSizeScale: sellDecision?.inventoryScale ?? 1,
     };
     const measurement = this.measurement
       ? { ...this.measurement, elapsedMs: Date.now() - this.measurement.startedAt, results: this._measurementResults() }
@@ -1430,6 +1587,7 @@ export class GridBot {
       mode: this.ex.mode,
       recovery: this.recovery,
       running: this.running,
+      waitingForAdmission: this.waitingForAdmission,
       config: this.config,
       grid: this.grid,
       lastPrice: this.lastPrice != null ? round2(this.lastPrice) : null,
@@ -1479,12 +1637,22 @@ function restoreActivity(snap) {
 
 function withGuardDefaults(config) {
   if (!config) return config;
+  const optimizedNeutral = config.mode === 'neutral'
+    && ['range_balanced', 'ai_rotation', 'ai_rotation_v3'].includes(config.strategyId);
   return {
     ...config,
     maxDirectionalNotionalPct: bounded(config.maxDirectionalNotionalPct, 1, 100, STRATEGY_GUARD_DEFAULTS.maxDirectionalNotionalPct),
     trendGuardEnabled: config.trendGuardEnabled !== false,
     trendGuardMinStrength: bounded(config.trendGuardMinStrength, 0, 1, STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength),
     trendGuardRefreshMs: bounded(config.trendGuardRefreshMs, 60_000, 60 * 60_000, STRATEGY_GUARD_DEFAULTS.trendGuardRefreshMs),
+    neutralRangeAdmissionEnabled: config.neutralRangeAdmissionEnabled == null
+      ? optimizedNeutral : config.neutralRangeAdmissionEnabled === true,
+    rangeAdmissionMinAtrPct: bounded(config.rangeAdmissionMinAtrPct, 0.05, 10, NEUTRAL_GRID_DEFAULTS.rangeAdmissionMinAtrPct),
+    inventorySkewEnabled: config.inventorySkewEnabled == null
+      ? optimizedNeutral : config.inventorySkewEnabled === true,
+    inventorySkewStartPctOfCap: bounded(config.inventorySkewStartPctOfCap, 0, 95, NEUTRAL_GRID_DEFAULTS.inventorySkewStartPctOfCap),
+    inventorySkewMinScale: bounded(config.inventorySkewMinScale, 0.05, 1, NEUTRAL_GRID_DEFAULTS.inventorySkewMinScale),
+    minRoundTripCostMultiple: bounded(config.minRoundTripCostMultiple, 1, 10, NEUTRAL_GRID_DEFAULTS.costCoverageMultiple),
   };
 }
 
@@ -1503,6 +1671,12 @@ function parameterSnapshot(config) {
     outOfRangeAction: config.outOfRangeAction,
     maxDirectionalNotionalPct: config.maxDirectionalNotionalPct,
     trendGuardEnabled: config.trendGuardEnabled,
+    neutralRangeAdmissionEnabled: config.neutralRangeAdmissionEnabled,
+    rangeAdmissionMinAtrPct: config.rangeAdmissionMinAtrPct,
+    inventorySkewEnabled: config.inventorySkewEnabled,
+    inventorySkewStartPctOfCap: config.inventorySkewStartPctOfCap,
+    inventorySkewMinScale: config.inventorySkewMinScale,
+    minRoundTripCostMultiple: config.minRoundTripCostMultiple,
   };
 }
 
@@ -1516,6 +1690,7 @@ function defaultGuardState() {
     dataSource: null,
     reason: '尚未检查趋势',
     error: null,
+    rangeAdmission: { enabled: false, allowed: true, reason: 'not_required', detail: '当前方向不需要中性准入。' },
   };
 }
 

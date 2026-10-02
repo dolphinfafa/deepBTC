@@ -103,6 +103,23 @@
     .paper-equity-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
     .paper-equity-control input { min-width: 0; height: 38px; box-sizing: border-box; }
     .paper-equity-control .btn { min-height: 38px; }
+    .paper-instance-workspace { margin: 0 0 18px; border-top: 1px solid #b8ddcf; border-bottom: 1px solid #b8ddcf; background: #f3faf7; }
+    .paper-instance-toolbar { min-height: 48px; display: flex; align-items: center; gap: 10px; }
+    .paper-instance-toolbar strong { font-size: 12px; }
+    .paper-instance-toolbar span { color: var(--muted); font-size: 10px; }
+    .paper-instance-actions { margin-left: auto; display: flex; gap: 7px; }
+    .paper-instance-list { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); gap: 8px; padding: 0 0 12px; overflow-x: auto; }
+    .paper-instance-tab { min-width: 0; min-height: 78px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--white); color: var(--ink); text-align: left; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px 8px; align-content: center; }
+    .paper-instance-tab:hover { border-color: #8fb8a8; }
+    .paper-instance-tab.active { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+    .paper-instance-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 800; }
+    .paper-instance-state { color: var(--muted); font-size: 9px; font-weight: 750; }
+    .paper-instance-state.running { color: var(--green); }
+    .paper-instance-strategy { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #315b4b; font-size: 10px; font-weight: 750; }
+    .paper-instance-result { grid-column: 1 / -1; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+    .panel-title-stack { min-width: 0; }
+    .panel-title-stack h2 { margin: 0; }
+    .panel-title-stack small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 650; overflow-wrap: anywhere; }
     .positive { color: var(--green) !important; }
     .negative { color: var(--coral) !important; }
     .exchange-overview-actions { display: flex; gap: 8px; justify-content: flex-start; margin: 0 0 18px; }
@@ -293,6 +310,9 @@
       .paper-equity-control { grid-template-columns: 1fr; }
       .paper-equity-copy { grid-column: auto; }
       .paper-equity-control .btn { width: 100%; }
+      .paper-instance-toolbar { align-items: flex-start; padding: 9px 0; }
+      .paper-instance-toolbar > div:first-child span { display: block; margin-top: 3px; }
+      .paper-instance-list { grid-auto-columns: minmax(170px, 82vw); }
       .metric { min-height: 92px; padding: 13px; }
       .metric strong { font-size: 17px; }
       .chart-wrap { min-height: 250px; }
@@ -500,6 +520,17 @@
       <div><strong id="mode-guard-title">页面与服务模式不一致</strong><span id="mode-guard-detail">交易操作已锁定。</span></div>
       <a id="runtime-mode-link" class="btn small" href="/paper">打开当前运行页面</a>
     </section>
+
+    <section id="paper-instance-workspace" class="paper-instance-workspace paper-page-only" aria-label="模拟盘实例">
+      <div class="shell paper-instance-toolbar">
+        <div><strong>并行模拟盘</strong><span>共享同一 BTC 行情，各自独立计算仓位和盈亏</span></div>
+        <div class="paper-instance-actions">
+          <button id="paper-instance-add" class="btn small" title="新建模拟盘">+ 新建</button>
+          <button id="paper-instance-delete" class="btn small danger" title="删除当前空闲模拟盘" disabled>删除当前</button>
+        </div>
+      </div>
+      <div class="shell"><div id="paper-instance-list" class="paper-instance-list"><span class="empty-row">正在读取模拟盘...</span></div></div>
+    </section>
     <div id="overview" class="section-heading">
       <h2>账户总览</h2>
       <p>单交易所 · 实时行情、权益与执行状态</p>
@@ -608,7 +639,7 @@
       </article>
 
       <aside class="panel">
-        <header class="panel-head"><h2>策略启动</h2><span id="run-state" class="pill push">未运行</span></header>
+        <header class="panel-head"><div class="panel-title-stack"><h2>策略启动</h2><small id="active-instance-strategy">当前模拟盘 · 尚未选择策略</small></div><span id="run-state" class="pill push">未运行</span></header>
         <div class="panel-body">
           <div class="strategy-picker">
             <label for="strategy-profile-select">策略</label>
@@ -680,7 +711,7 @@
       </div>
       <div class="monitor-body">
         <div class="monitor-grid">
-          <div class="monitor-section-head"><h3>网格与挂单分布</h3><span id="range-state" class="pill push">未配置</span></div>
+          <div class="monitor-section-head"><h3 id="ladder-title">网格与挂单分布</h3><span id="range-state" class="pill push">未配置</span></div>
           <div class="grid-visual">
             <div id="ladder" class="ladder"></div>
             <div class="price-pointer"><span id="range-upper">--</span><span id="range-current">当前 --</span><span id="range-lower">--</span></div>
@@ -753,22 +784,22 @@
       </summary>
       <div id="ai-settings-body" class="settings-body">
         <div class="settings-grid">
-          <div class="field"><label for="ai-provider">提供商</label><select id="ai-provider"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select></div>
+          <div class="field"><label for="ai-provider">提供商</label><select id="ai-provider"><option value="openai">OpenAI 兼容</option><option value="xai">xAI / Grok</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select></div>
           <div class="field settings-span-2"><label for="ai-base-url">Base URL</label><input id="ai-base-url" type="url" placeholder="留空使用提供商默认地址"></div>
           <div class="field"><label for="ai-model">模型</label><input id="ai-model" type="text" placeholder="默认 gpt-5.6-terra"></div>
           <div class="field"><label for="ai-model-small">小模型</label><input id="ai-model-small" type="text" placeholder="用于低成本分析"></div>
           <div class="field"><label for="ai-sentinel-minutes">风控巡检间隔（分钟）</label><input id="ai-sentinel-minutes" type="number" min="0" max="1440" value="5"></div>
-          <div class="field"><label for="ai-market-minutes">市况分析间隔（分钟）</label><input id="ai-market-minutes" type="number" min="0" max="1440" value="30"></div>
+          <div class="field"><label for="ai-market-minutes">市况分析间隔（分钟）</label><input id="ai-market-minutes" type="number" min="0" max="1440" value="60"></div>
           <div class="field"><label for="ai-report-hour">AI 复盘小时</label><input id="ai-report-hour" type="number" min="-1" max="23" value="20"></div>
           <div class="field settings-span-2"><label for="ai-api-key">API Key <small id="ai-key-state">未配置</small></label><input id="ai-api-key" type="password" autocomplete="new-password" placeholder="输入新值，页面不会回显"></div>
         </div>
         <div class="settings-grid paper-page-only" style="margin-top:12px" hidden>
-          <label class="inline-check" for="ai-autopilot-enabled"><input id="ai-autopilot-enabled" type="checkbox">开启 AI 自动策略</label>
-          <div class="field"><label for="ai-autopilot-confidence">最低置信度</label><input id="ai-autopilot-confidence" type="number" min="0.5" max="0.95" step="0.05" value="0.75"></div>
-          <div class="field"><label for="ai-autopilot-confirmations">连续确认次数</label><input id="ai-autopilot-confirmations" type="number" min="2" max="6" step="1" value="2"></div>
-          <div class="field"><label for="ai-autopilot-cooldown">切换冷却 <small>分钟</small></label><input id="ai-autopilot-cooldown" type="number" min="60" max="1440" step="30" value="240"></div>
+          <label class="inline-check" for="ai-autopilot-enabled"><input id="ai-autopilot-enabled" type="checkbox">开启大周期自动轮动</label>
+          <div class="field"><label for="ai-autopilot-confidence">最低置信度</label><input id="ai-autopilot-confidence" type="number" min="0.5" max="0.95" step="0.05" value="0.8"></div>
+          <div class="field"><label for="ai-autopilot-confirmations">连续确认次数</label><input id="ai-autopilot-confirmations" type="number" min="2" max="24" step="1" value="12"></div>
+          <div class="field"><label for="ai-autopilot-cooldown">最短持有 <small>分钟</small></label><input id="ai-autopilot-cooldown" type="number" min="60" max="10080" step="60" value="2880"></div>
         </div>
-        <div id="ai-autopilot-status" class="status-box paper-page-only">AI 自动策略已关闭</div>
+        <div id="ai-autopilot-status" class="status-box paper-page-only">大周期自动轮动已关闭</div>
         <div class="settings-actions">
           <button id="ai-save-btn" class="btn primary">保存 AI 设置</button>
           <button id="ai-test-btn" class="btn">测试连接</button>
@@ -822,7 +853,7 @@
   </div>
   <div id="toast" class="toast"></div>
 
-  <script src="grid-form-state.js"></script>
+  <script src="grid-form-state.js?v=20260830-start-retry"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const queryToken = new URLSearchParams(location.search).get('token');
@@ -832,7 +863,7 @@
     const explicitConsoleMode = document.documentElement.dataset.consoleModeExplicit === 'true';
     let consoleMode = document.documentElement.dataset.consoleMode === 'live' ? 'live' : 'paper';
     let dashboardRoutesAvailable = document.documentElement.dataset.consoleModeCleanRoute === 'true';
-    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualMode: false, manualLeverage: false, strategyProfiles: [], strategyId: 'range_balanced', strategyPreview: null, strategyProfilesBackendReady: false, paperEquityDirty: false, busy: false, confirmResolver: null, stream: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
+    const state = { app: null, connection: null, notification: null, ai: null, aiSuggestion: null, aiProposal: null, market: null, markets: [], bot: null, analysis: null, candles: [], liveSecondCandles: [], prices: [], livePrices: [], chartInterval: 60, chartMode: 'focus', chartManualRange: null, chartView: null, chartDrag: null, mode: 'neutral', formDirty: false, manualMode: false, manualLeverage: false, strategyProfiles: [], strategyId: 'range_balanced', strategyPreview: null, strategyProfilesBackendReady: false, paperInstances: [], paperInstanceId: localStorage.getItem('gridpilot-paper-instance') || 'paper-main', maxPaperInstances: 6, paperEquityDirty: false, busy: false, confirmResolver: null, stream: null, streamOpen: false, streamFallbackTimer: null, settingsInitialized: { connection: false, notification: false } };
 
     function consolePageUrl(mode) {
       const url = new URL(location.href);
@@ -864,6 +895,7 @@
     function apiUrl(path) {
       const url = new URL(basePath + path, location.origin);
       if (token) url.searchParams.set('token', token);
+      if (consoleMode === 'paper' && state.paperInstanceId) url.searchParams.set('paperInstanceId', state.paperInstanceId);
       return url.pathname + url.search;
     }
 
@@ -910,6 +942,7 @@
         if (connection) renderConnectionSettings(connection);
         renderNotificationSettings(notification);
         renderAiSettings(ai);
+        if (consoleMode === 'paper' && app.multiPaper) await loadPaperInstances();
         await loadMarkets();
         await loadTrend();
         state.bot = await request(`/api/state?console=${consoleMode}`);
@@ -939,7 +972,14 @@
         state.strategyId = $('strategy-profile-select').value;
         state.strategyPreview = null;
         renderSelectedStrategyDescription();
+        if (consoleMode === 'paper' && state.app?.multiPaper) await persistPaperInstanceStrategy();
         await loadStrategyPreview();
+      });
+      $('paper-instance-add').addEventListener('click', createPaperInstance);
+      $('paper-instance-delete').addEventListener('click', deletePaperInstance);
+      $('paper-instance-list').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-paper-instance]');
+        if (button && button.dataset.paperInstance !== state.paperInstanceId) switchPaperInstance(button.dataset.paperInstance);
       });
       $('mode-control').addEventListener('click', (event) => {
         const button = event.target.closest('button[data-mode]');
@@ -997,6 +1037,7 @@
       $('daily-send-btn').addEventListener('click', sendDailyReport);
       $('notification-save-btn').addEventListener('click', saveNotificationSettings);
       $('ai-save-btn').addEventListener('click', saveAiSettings);
+      $('ai-provider').addEventListener('change', applyAiProviderDefaults);
       $('ai-test-btn').addEventListener('click', testAiConnection);
       $('ai-analyze-btn').addEventListener('click', runAiAnalysis);
       $('ai-apply-analysis-btn').addEventListener('click', applyAiSuggestion);
@@ -1049,8 +1090,8 @@
       const dataNetwork = String(state.app.dataNetwork || '').toUpperCase();
       $('network-pill').textContent = dataNetwork && dataNetwork !== network ? `${network} · 数据 ${dataNetwork}` : network;
       const ai = state.app.ai || {};
-      $('ai-pill').textContent = ai.configured ? (ai.autopilotEnabled && consoleMode === 'paper' ? 'AI AUTO' : `AI ${ai.provider.toUpperCase()}`) : 'AI 未配置';
-      $('ai-pill').className = `pill ${ai.configured ? 'connected' : ''}`;
+      $('ai-pill').textContent = ai.autopilotEnabled && consoleMode === 'paper' ? '大周期轮动' : (ai.configured ? `AI ${ai.provider.toUpperCase()}` : 'AI 未配置');
+      $('ai-pill').className = `pill ${ai.configured || (ai.autopilotEnabled && consoleMode === 'paper') ? 'connected' : ''}`;
       $('mode-banner-title').textContent = consoleMode === 'live' ? '实盘交易台 · LIVE' : '模拟盘工作台 · PAPER';
       $('mode-banner-detail').textContent = consoleMode === 'live'
         ? (runtimeMatches ? '真实订单会发送到 Decibel，请逐项核对后操作' : '服务尚未切换到实盘，当前页面仅供配置与查看')
@@ -1137,20 +1178,21 @@
       $('ai-model').value = settings.model || config.model || '';
       $('ai-model-small').value = settings.modelSmall || config.modelSmall || '';
       $('ai-sentinel-minutes').value = settings.sentinelMinutes ?? config.sentinelMinutes ?? 5;
-      $('ai-market-minutes').value = settings.marketMinutes ?? config.marketMinutes ?? 30;
+      $('ai-market-minutes').value = settings.marketMinutes ?? config.marketMinutes ?? 60;
+      $('ai-market-minutes').disabled = config.autopilotEnabled === true && consoleMode === 'paper';
       $('ai-report-hour').value = settings.reportHour ?? config.reportHour ?? 20;
       $('ai-autopilot-enabled').checked = config.autopilotEnabled ?? settings.autopilotEnabled ?? false;
-      $('ai-autopilot-confidence').value = config.autopilotMinConfidence ?? settings.autopilotMinConfidence ?? 0.75;
-      $('ai-autopilot-confirmations').value = config.autopilotConfirmations ?? settings.autopilotConfirmations ?? 2;
-      $('ai-autopilot-cooldown').value = config.autopilotCooldownMinutes ?? settings.autopilotCooldownMinutes ?? 240;
+      $('ai-autopilot-confidence').value = config.autopilotMinConfidence ?? settings.autopilotMinConfidence ?? 0.8;
+      $('ai-autopilot-confirmations').value = config.autopilotConfirmations ?? settings.autopilotConfirmations ?? 12;
+      $('ai-autopilot-cooldown').value = config.autopilotCooldownMinutes ?? settings.autopilotCooldownMinutes ?? 2880;
       const autopilotBackendReady = config.autopilotEnabled !== undefined;
       $('ai-autopilot-enabled').disabled = !autopilotBackendReady;
       $('ai-autopilot-confidence').disabled = !autopilotBackendReady;
       $('ai-autopilot-confirmations').disabled = !autopilotBackendReady;
       $('ai-autopilot-cooldown').disabled = !autopilotBackendReady;
       $('ai-key-state').textContent = settings.hasApiKey || config.configured ? '已配置' : '未配置';
-      $('ai-settings-badge').textContent = config.configured ? (config.autopilotEnabled && consoleMode === 'paper' ? '自动策略' : '已配置') : '未配置';
-      $('ai-settings-badge').className = `pill push ${config.configured ? 'paper' : ''}`;
+      $('ai-settings-badge').textContent = config.autopilotEnabled && consoleMode === 'paper' ? '自动轮动' : (config.configured ? '已配置' : '未配置');
+      $('ai-settings-badge').className = `pill push ${config.configured || (config.autopilotEnabled && consoleMode === 'paper') ? 'paper' : ''}`;
       $('ai-analyze-btn').disabled = !config.configured;
       $('ai-chat-btn').disabled = !config.configured;
       $('ai-test-btn').disabled = !config.configured;
@@ -1158,14 +1200,27 @@
       $('ai-report-btn').disabled = !config.configured;
       renderAiAutopilot(autopilotBackendReady
         ? (result?.autopilot || state.bot?.aiAutopilot)
-        : { enabled: false, effective: false, message: '服务待重启，重启后可配置 AI 自动策略' });
+        : { enabled: false, effective: false, message: '服务待重启，重启后可使用大周期自动轮动' });
+    }
+
+    function applyAiProviderDefaults() {
+      const defaults = {
+        openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
+        xai: { baseUrl: 'https://api.x.ai/v1', model: 'grok-4.6' },
+        anthropic: { baseUrl: 'https://api.anthropic.com', model: 'claude-3-5-haiku-latest' },
+        gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.0-flash' },
+      }[$('ai-provider').value];
+      if (!defaults) return;
+      $('ai-base-url').value = defaults.baseUrl;
+      $('ai-model').value = defaults.model;
+      $('ai-model-small').value = defaults.model;
     }
 
     async function saveAiSettings() {
       const enableAutopilot = $('ai-autopilot-enabled').checked;
       const wasEnabled = state.ai?.config?.autopilotEnabled ?? state.ai?.settings?.autopilotEnabled ?? false;
-      if (enableAutopilot && state.ai?.config?.autopilotEnabled === undefined) return showToast('服务待重启，当前不能启用 AI 自动策略。', true);
-      if (enableAutopilot && !wasEnabled && !(await confirmDialog('启用后，AI 可在 PAPER 模拟盘自动启动、撤单平仓和切换中性/做多/做空网格。确认启用？'))) return;
+      if (enableAutopilot && state.ai?.config?.autopilotEnabled === undefined) return showToast('服务待重启，当前不能启用大周期自动轮动。', true);
+      if (enableAutopilot && !wasEnabled && !(await confirmDialog('启用后，大周期规则可在 PAPER 模拟盘自动启动、撤单平仓和切换中性/做多/做空网格。确认启用？'))) return;
       setBusyButton($('ai-save-btn'), true, '保存中');
       try {
         const result = await request('/api/ai-config', {
@@ -1277,7 +1332,7 @@
         state.aiSuggestion = params;
         await applyAiSuggestion();
       } else if (proposal.type === 'adjust_range') {
-        showToast('运行中的区间由自动调区间服务管理，无需人工填写。');
+        showToast('运行中的参数由小时参数引擎管理，无需人工填写。');
       } else if (proposal.type === 'reconnect') await action('/api/reconnect', {});
       else if (proposal.type === 'cancel_orders') await confirmAction('AI 建议撤销全部挂单并保留持仓，确认执行？', '/api/cancel-orders');
       else if (proposal.type === 'stop_grid') {
@@ -1435,6 +1490,133 @@
       $(`${kind}-settings-panel`).open = !collapsed;
     }
 
+    async function loadPaperInstances() {
+      const result = await request('/api/paper-instances');
+      state.paperInstances = result.instances || [];
+      state.maxPaperInstances = Number(result.maxInstances) || 6;
+      if (!state.paperInstances.some((item) => item.id === state.paperInstanceId)) {
+        state.paperInstanceId = state.paperInstances[0]?.id || 'paper-main';
+        localStorage.setItem('gridpilot-paper-instance', state.paperInstanceId);
+      }
+      const active = state.paperInstances.find((item) => item.id === state.paperInstanceId);
+      if (active?.strategyId) state.strategyId = active.strategyId;
+      renderPaperInstances();
+    }
+
+    function renderPaperInstances() {
+      const list = $('paper-instance-list');
+      if (!state.paperInstances.length) {
+        list.innerHTML = '<span class="empty-row">暂无模拟盘</span>';
+        return;
+      }
+      list.innerHTML = state.paperInstances.map((item) => {
+        const active = item.id === state.paperInstanceId;
+        const status = item.running ? (item.recovery ? '回收中' : item.waitingForAdmission ? '等待准入' : '运行中') : '未运行';
+        return `<button class="paper-instance-tab${active ? ' active' : ''}" data-paper-instance="${escapeHtml(item.id)}" aria-pressed="${active}">
+          <span class="paper-instance-name">${escapeHtml(item.name)}</span>
+          <span class="paper-instance-state${item.running ? ' running' : ''}">${status}</span>
+          <span class="paper-instance-strategy">${escapeHtml(item.strategyName || '未选择策略')}</span>
+          <span class="paper-instance-result">权益 ${money(item.equity)} · 总盈亏 ${signed(item.totalPnl, 2)} USDC</span>
+        </button>`;
+      }).join('');
+      const current = state.paperInstances.find((item) => item.id === state.paperInstanceId);
+      const removable = current && !current.primary && !current.running && !current.position && Number(current.openOrders || 0) === 0;
+      $('paper-instance-add').disabled = state.busy || state.paperInstances.length >= state.maxPaperInstances;
+      $('paper-instance-delete').disabled = state.busy || !removable;
+      $('active-instance-strategy').textContent = current
+        ? `${current.name} · ${current.running ? '正在运行' : '已选择'}：${current.strategyName || '未选择策略'}`
+        : '当前模拟盘 · 尚未选择策略';
+    }
+
+    async function switchPaperInstance(instanceId) {
+      if (state.busy) return;
+      const target = state.paperInstances.find((item) => item.id === instanceId);
+      if (!target) return showToast('模拟盘实例不存在，请刷新页面。', true);
+      state.busy = true;
+      setActionsDisabled(true);
+      state.stream?.close();
+      state.stream = null;
+      state.streamOpen = false;
+      state.paperInstanceId = target.id;
+      localStorage.setItem('gridpilot-paper-instance', target.id);
+      state.strategyId = target.strategyId || 'range_balanced';
+      state.strategyPreview = null;
+      state.formDirty = false;
+      state.paperEquityDirty = false;
+      state.liveSecondCandles = [];
+      state.chartManualRange = null;
+      renderPaperInstances();
+      try {
+        state.bot = await request(`/api/state?console=${consoleMode}`);
+        renderState(state.bot);
+        await loadStrategyProfiles();
+        await loadTrend();
+      } catch (error) {
+        showToast(error.message, true);
+      } finally {
+        state.busy = false;
+        renderActionAvailability(state.bot);
+        renderPaperInstances();
+        connectStream();
+      }
+    }
+
+    async function createPaperInstance() {
+      if (state.busy || state.paperInstances.length >= state.maxPaperInstances) return;
+      state.busy = true;
+      renderPaperInstances();
+      try {
+        const result = await request('/api/paper-instances', { method: 'POST', body: '{}' });
+        state.paperInstances = result.instances || [];
+        state.maxPaperInstances = Number(result.maxInstances) || state.maxPaperInstances;
+        state.busy = false;
+        await switchPaperInstance(result.selectedId);
+        showToast('已新建独立模拟盘');
+      } catch (error) {
+        state.busy = false;
+        renderPaperInstances();
+        showToast(error.message, true);
+      }
+    }
+
+    async function deletePaperInstance() {
+      const current = state.paperInstances.find((item) => item.id === state.paperInstanceId);
+      if (!current || current.primary) return;
+      if (!(await confirmDialog(`删除“${current.name}”及其历史模拟数据？`))) return;
+      state.busy = true;
+      renderPaperInstances();
+      try {
+        const result = await request('/api/paper-instances/delete', {
+          method: 'POST',
+          body: JSON.stringify({ paperInstanceId: current.id }),
+        });
+        state.paperInstances = result.instances || [];
+        state.paperInstanceId = result.selectedId || 'paper-main';
+        localStorage.setItem('gridpilot-paper-instance', state.paperInstanceId);
+        state.busy = false;
+        await switchPaperInstance(state.paperInstanceId);
+        showToast('模拟盘已删除');
+      } catch (error) {
+        state.busy = false;
+        renderPaperInstances();
+        showToast(error.message, true);
+      }
+    }
+
+    async function persistPaperInstanceStrategy() {
+      try {
+        const result = await request('/api/paper-instances/select-strategy', {
+          method: 'POST',
+          body: JSON.stringify({ paperInstanceId: state.paperInstanceId, strategyId: state.strategyId }),
+        });
+        const index = state.paperInstances.findIndex((item) => item.id === result.instance?.id);
+        if (index >= 0) state.paperInstances[index] = result.instance;
+        renderPaperInstances();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+
     async function loadMarkets() {
       const result = await request('/api/markets');
       state.markets = result.markets || [];
@@ -1454,8 +1636,11 @@
         const result = await request(`/api/strategy-profiles?console=${consoleMode}`);
         state.strategyProfiles = result.profiles || [];
         state.strategyProfilesBackendReady = true;
-        const configId = state.bot?.config?.strategyId || strategyIdForMode(state.bot?.config?.mode);
-        const preferred = state.strategyProfiles.find((profile) => profile.id === (configId || state.strategyId));
+        const configId = state.bot?.running
+          ? (state.bot?.config?.strategyId || strategyIdForMode(state.bot?.config?.mode))
+          : null;
+        const persistedId = state.bot?.paperInstance?.strategyId || state.strategyId;
+        const preferred = state.strategyProfiles.find((profile) => profile.id === (configId || persistedId));
         const selected = preferred || state.strategyProfiles.find((profile) => profile.available) || state.strategyProfiles[0];
         state.strategyId = selected?.id || '';
         $('strategy-profile-select').innerHTML = state.strategyProfiles.map((profile) => {
@@ -1463,7 +1648,7 @@
           return `<option value="${escapeHtml(profile.id)}" ${profile.available ? '' : 'disabled'}>${escapeHtml(profile.name + suffix)}</option>`;
         }).join('');
         $('strategy-profile-select').value = state.strategyId;
-        $('strategy-profile-select').disabled = !runtimeMatchesConsole() || !selected;
+        $('strategy-profile-select').disabled = !runtimeMatchesConsole() || !selected || !!state.bot?.running;
         renderSelectedStrategyDescription();
         await loadStrategyPreview();
       } catch (error) {
@@ -1505,13 +1690,36 @@
     function renderSelectedStrategyDescription() {
       const profile = strategyProfile(state.strategyId);
       $('strategy-profile-description').textContent = profile?.description || '请选择可用策略。';
+      $('start-btn').textContent = profile?.engine === 'turtle' ? '启动海龟策略' : (consoleMode === 'paper' ? '启动模拟网格' : '启动实盘网格');
     }
 
     function renderStrategyPreview(result) {
       const params = result?.params;
       if (!params) return;
       const profile = result.profile || strategyProfile(params.strategyId);
-      $('strategy-preview-mode').textContent = profile?.mode === 'dynamic' ? 'AI 自动判断' : modeName(params.mode);
+      if (profile?.engine === 'turtle' || params.engine === 'turtle') {
+        const turtle = result.turtle || {};
+        setFieldLabel('strategy-preview-range', '入场 / 退出');
+        setFieldLabel('strategy-preview-grid', '单位规模');
+        setFieldLabel('strategy-preview-leverage', '持仓规则');
+        setFieldLabel('strategy-preview-margin', '首单位名义金额');
+        setFieldLabel('strategy-preview-time', '日线信号时间');
+        $('strategy-preview-mode').textContent = '做多突破';
+        $('strategy-preview-range').textContent = `${money(turtle.entryHigh)} / ${money(turtle.exitLow)} USDC`;
+        $('strategy-preview-grid').textContent = `${format(turtle.unitSize, 6)} BTC · 风险 ${format(turtle.riskPct, 1)}%`;
+        $('strategy-preview-leverage').textContent = `1x · 最多 ${turtle.maxUnits} 单位 · 总名义 ≤ ${turtle.maxNotionalPct}%`;
+        $('strategy-preview-margin').textContent = `${money(turtle.unitNotional)} USDC`;
+        $('strategy-preview-time').textContent = turtle.signalAvailableAt ? new Date(turtle.signalAvailableAt).toLocaleString('zh-CN', { hour12: false }) : '--';
+        const failed = (result.checks || []).filter((check) => check.status === 'fail');
+        $('strategy-preview-status').textContent = result.ready
+          ? `${result.rationale} · ${turtle.state === 'breakout' ? '当前已突破，启动后将直接买入。' : `启动后等待 ${turtle.entryDays || params.entryDays} 日高点突破。`}`
+          : failed.map((check) => check.detail).join(' ');
+        renderActionAvailability(state.bot);
+        drawChart();
+        return;
+      }
+      resetStrategyPreviewLabels();
+      $('strategy-preview-mode').textContent = profile?.mode === 'dynamic' ? '大周期规则判断' : modeName(params.mode);
       $('strategy-preview-range').textContent = `${money(params.lower)} - ${money(params.upper)} USDC`;
       $('strategy-preview-grid').textContent = `${params.gridCount} 格 · ${format(params.sizeBase, 6)} BTC/格`;
       $('strategy-preview-leverage').textContent = `${params.leverage}x · 自动风控`;
@@ -1537,6 +1745,25 @@
         $('strategy-profile-select').value = inferredId;
         renderSelectedStrategyDescription();
       }
+      if (bot.engine === 'turtle' || params.engine === 'turtle') {
+        const turtle = bot.turtle || {};
+        setFieldLabel('strategy-preview-range', '入场 / 当前退出');
+        setFieldLabel('strategy-preview-grid', '持仓单位');
+        setFieldLabel('strategy-preview-leverage', '风险规则');
+        setFieldLabel('strategy-preview-margin', '当前名义金额');
+        setFieldLabel('strategy-preview-time', '日线信号时间');
+        $('strategy-preview-mode').textContent = '海龟做多';
+        $('strategy-preview-range').textContent = `${money(turtle.entryHigh)} / ${money(turtle.activeExitPrice || turtle.exitLow)} USDC`;
+        $('strategy-preview-grid').textContent = `${turtle.currentUnits}/${turtle.maxUnits} 单位 · ${format(turtle.unitSize, 6)} BTC/单位`;
+        $('strategy-preview-leverage').textContent = `单位风险 ${format(turtle.riskPct, 1)}% · 2N 止损`;
+        $('strategy-preview-margin').textContent = `${money(bot.risk?.notional)} USDC`;
+        $('strategy-preview-time').textContent = turtle.signalAvailableAt ? new Date(turtle.signalAvailableAt).toLocaleString('zh-CN', { hour12: false }) : '--';
+        $('strategy-preview-status').textContent = turtle.state === 'holding'
+          ? `持仓管理中 · 下次加仓 ${money(turtle.nextAddPrice)} · 有效退出 ${money(turtle.activeExitPrice)}`
+          : `策略正常运行，正在等待价格突破 ${turtle.entryDays || params.entryDays} 日高点。`;
+        return;
+      }
+      resetStrategyPreviewLabels();
       $('strategy-preview-mode').textContent = modeName(params.mode);
       $('strategy-preview-range').textContent = `${money(params.lower)} - ${money(params.upper)} USDC`;
       $('strategy-preview-grid').textContent = `${params.gridCount} 格 · ${format(params.sizeBase, 6)} BTC/格`;
@@ -1545,6 +1772,19 @@
       $('strategy-preview-time').textContent = '运行中';
       $('strategy-preview-status').textContent = '当前显示实际运行参数；下次启动时会重新计算。';
       applyGeneratedParams(params, false);
+    }
+
+    function setFieldLabel(valueId, label) {
+      const node = $(valueId)?.parentElement?.querySelector('span');
+      if (node) node.textContent = label;
+    }
+
+    function resetStrategyPreviewLabels() {
+      setFieldLabel('strategy-preview-range', '自动区间');
+      setFieldLabel('strategy-preview-grid', '网格与单量');
+      setFieldLabel('strategy-preview-leverage', '杠杆');
+      setFieldLabel('strategy-preview-margin', '预计保证金');
+      setFieldLabel('strategy-preview-time', '参数时间');
     }
 
     function applyGeneratedParams(params, markPreview = true) {
@@ -1570,7 +1810,8 @@
 
     async function loadPaperReadiness(params = null) {
       try {
-        const result = await request('/api/paper-readiness', params ? { method: 'POST', body: JSON.stringify(params) } : {});
+        const body = params ? { params, paperInstanceId: state.paperInstanceId } : null;
+        const result = await request('/api/paper-readiness', body ? { method: 'POST', body: JSON.stringify(body) } : {});
         state.paperReadiness = result;
         renderPaperReadiness(result);
       } catch (error) {
@@ -1582,14 +1823,54 @@
     function renderPaperReadiness(result) {
       if (!result) return;
       const checks = result.checks || [];
+      const autopilot = state.bot?.aiAutopilot || null;
       $('paper-readiness-badge').textContent = result.ready ? '可启动' : (result.mode === 'paper' ? '待处理' : '仅供参考');
       $('paper-readiness-badge').className = `pill push ${result.ready ? 'paper' : result.mode === 'paper' ? 'warn' : ''}`;
       const auto = result.autoRebalance || {};
-      const last = result.lastAutoRebalance;
+      const isTurtle = result.profile || result.params
+        ? (result.profile?.engine === 'turtle' || result.params?.engine === 'turtle')
+        : state.bot?.engine === 'turtle';
+        const sentiment = autopilot?.sentiment;
+        const sentimentDetail = autopilot?.requiresLiveSentiment
+          ? [
+            sentiment ? `情绪${sentimentDirectionName(sentiment.direction)} ${signed(sentiment.score, 2)}` : null,
+            sentiment ? `置信度 ${format(Number(sentiment.confidence) * 100, 0)}%` : null,
+            sentiment ? `独立来源 ${sentiment.independentSourceCount || 0}` : null,
+            sentiment?.observedAt ? `搜索 ${new Date(sentiment.observedAt).toLocaleString('zh-CN', { hour12: false })}` : null,
+            autopilot.sentimentReason || autopilot.sentimentError,
+          ].filter(Boolean).join(' · ')
+          : null;
+        const autopilotDetail = autopilot?.enabled
+          ? [
+            autopilot.message,
+            autopilot.requiresLiveSentiment ? sentimentDetail : null,
+            !autopilot.requiresLiveSentiment && autopilot.historyEvaluatedAt ? `已回放 ${autopilot.historySignalsEvaluated || 0} 个已完成小时` : null,
+            autopilot.lastSignalTime ? `信号截止 ${new Date(autopilot.lastSignalTime).toLocaleString('zh-CN', { hour12: false })}` : null,
+          ].filter(Boolean).join(' · ')
+          : null;
       const rows = [
+        ...(autopilot?.enabled ? [{
+          label: autopilot.requiresLiveSentiment ? 'Grok 情绪轮动' : autopilot.strategyId === 'ai_rotation_v3' ? 'V3 启动结果' : '自动轮动结果',
+          status: autopilot.candidate ? 'pass' : 'warn',
+          detail: autopilotDetail,
+        }] : []),
         ...checks,
-        { label: '自动调区间', status: auto.enabled ? 'pass' : 'warn', detail: auto.enabled ? '模拟盘开启 · 每 60 分钟检查 · 调整后冷却 240 分钟' : '未开启' },
-        { label: '最近自动调区间', status: 'warn', detail: last?.t ? `${new Date(last.t).toLocaleString()} · ${last.reason || '--'}` : '尚无记录' },
+        {
+          label: isTurtle ? '海龟信号更新' : '运行后参数更新',
+          status: isTurtle || auto.enabled ? 'pass' : 'warn',
+          detail: isTurtle
+            ? `每 60 分钟读取已完成日 K 线；${result.turtle?.entryDays || result.params?.entryDays} 日入场、${result.turtle?.exitDays || result.params?.exitDays} 日退出和 ATR 自动更新`
+            : auto.enabled
+              ? (result.running ? '每 60 分钟评估参数 · 调整后冷却 240 分钟' : '网格启动后才每 60 分钟评估；该引擎不负责启动网格')
+              : '未开启',
+        },
+        {
+          label: isTurtle ? '最近信号读取' : '最近参数调整',
+          status: isTurtle ? (result.turtle?.lastSignalRefreshAt || result.turtle?.signalAvailableAt ? 'pass' : 'warn') : (auto.lastAdjustedAt ? 'pass' : 'warn'),
+          detail: isTurtle
+            ? (result.turtle?.lastSignalRefreshAt || result.turtle?.signalAvailableAt ? new Date(result.turtle.lastSignalRefreshAt || result.turtle.signalAvailableAt).toLocaleString('zh-CN', { hour12: false }) : '启动时读取')
+            : (auto.lastAdjustedAt ? new Date(auto.lastAdjustedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未发生实际调整'),
+        },
       ];
       $('paper-readiness-list').innerHTML = rows.map((check) => `<span class="readiness-item ${check.status}"><b>${check.status === 'pass' ? '✓' : check.status === 'fail' ? '×' : '!'}</b>${escapeHtml(check.label)}：${escapeHtml(check.detail || '--')}</span>`).join('');
     }
@@ -1691,8 +1972,12 @@
         if (phrase == null) return;
         body.liveConfirmation = phrase.trim();
       } else {
-        const detail = profile.mode === 'dynamic'
-          ? 'AI 会等待多周期连续确认后自动启动、切换或暂停网格。'
+        const detail = profile.engine === 'turtle'
+          ? `系统按 ${state.strategyPreview?.params?.entryDays || 20} 日突破入场、${state.strategyPreview?.params?.exitDays || 10} 日通道退出，单单位风险固定为 1.5%，每上涨 0.5N 加仓，最多 4 单位，总名义金额不超过权益 100%。`
+          : profile.requiresLiveSentiment
+          ? '系统先用 1D、4H、1H 判断大周期，再由 Grok 搜索 X 与网页情绪确认；启动时立即分析一次，15 分钟后第二次合格确认才会挂单。情绪冲突只保持现状，高可信重大反向事件只会暂停，不会直接反手。'
+          : profile.mode === 'dynamic'
+          ? '系统会等待 1D、4H、1H 连续确认后，自动运行对应的做多、做空或中性网格。'
           : `当前预览为 ${state.strategyPreview?.params?.gridCount || '--'} 格、${state.strategyPreview?.params?.leverage || '--'}x，启动前会重新计算。`;
         if (!(await confirmDialog(`${allowExistingPosition ? '重新建立' : '启用'}“${profile.name}”策略？${detail}`))) return;
       }
@@ -1822,7 +2107,7 @@
       state.busy = true;
       renderActionAvailability(state.bot);
       try {
-        const result = await request('/api/paper-equity', { method: 'POST', body: JSON.stringify({ equity }) });
+        const result = await request('/api/paper-equity', { method: 'POST', body: JSON.stringify({ equity, paperInstanceId: state.paperInstanceId }) });
         state.bot = result;
         state.paperEquityDirty = false;
         renderState(result);
@@ -1890,11 +2175,19 @@
       state.busy = true;
       setActionsDisabled(true);
       try {
-        const result = await request(path, { method: 'POST', body: JSON.stringify(body) });
+        const payload = consoleMode === 'paper'
+          ? { ...(body || {}), paperInstanceId: state.paperInstanceId }
+          : (body || {});
+        const result = await request(path, { method: 'POST', body: JSON.stringify(payload) });
         state.bot = result;
         renderState(result);
-        showToast(result.strategyActivation?.message || '操作已完成');
-        if (['/api/stop', '/api/cancel-orders', '/api/close-position'].includes(path) && !result.running) await loadStrategyPreview();
+        const activationMessage = result.strategyActivation?.message;
+        if (activationMessage) {
+          $('action-status').textContent = activationMessage;
+          $('strategy-preview-status').textContent = activationMessage;
+        }
+        showToast(activationMessage || '操作已完成');
+        if (['/api/stop', '/api/cancel-orders', '/api/close-position', '/api/emergency-stop'].includes(path) && !result.running) await loadStrategyPreview();
       } catch (error) {
         showToast(error.message, true);
         $('action-status').textContent = error.message;
@@ -1968,6 +2261,10 @@
 
     function applyRuntimeUpdate(runtimeState) {
       state.bot = runtimeState;
+      if (Array.isArray(runtimeState.paperInstances)) {
+        state.paperInstances = runtimeState.paperInstances;
+        renderPaperInstances();
+      }
       renderState(runtimeState);
       const value = Number(runtimeState.lastPrice);
       if (!(value > 0)) return;
@@ -1982,14 +2279,19 @@
 
     function renderState(runtimeBot) {
       if (!runtimeBot) return;
+      if (Array.isArray(runtimeBot.paperInstances)) state.paperInstances = runtimeBot.paperInstances;
       const bot = runtimeMatchesConsole() ? runtimeBot : inactiveConsoleState(runtimeBot);
-      if (bot.paperReadiness && (!state.strategyPreview || bot.running)) renderPaperReadiness(bot.paperReadiness);
+      const isTurtle = bot.engine === 'turtle' || bot.config?.engine === 'turtle';
+      $('ladder-title').textContent = isTurtle ? '海龟通道与持仓单位' : '网格与挂单分布';
+      if (consoleMode === 'paper') renderPaperInstances();
+      const readiness = state.strategyPreview && !bot.running ? state.paperReadiness : bot.paperReadiness;
+      if (readiness) renderPaperReadiness(readiness);
       renderAiAutopilot(bot.aiAutopilot);
       if (bot.aiAutopilot && state.ai?.config?.autopilotEnabled !== undefined) $('ai-autopilot-enabled').checked = !!bot.aiAutopilot.enabled;
       const price = Number(bot.lastPrice || state.market?.lastPrice);
       $('last-price').textContent = price > 0 ? `${money(price)} USDC` : '--';
       const health = bot.health || {};
-      $('health-text').textContent = health.reason || (bot.running ? '运行中' : '未运行');
+      $('health-text').textContent = health.reason || (bot.running ? (bot.waitingForAdmission ? '等待震荡准入' : '运行中') : '未运行');
       $('metric-equity').textContent = money(bot.equity);
       if (!state.paperEquityDirty && Number(bot.equity) > 0) $('paper-equity-input').value = Number(bot.equity).toFixed(2);
       setSigned($('metric-pnl'), bot.totalPnl);
@@ -1998,7 +2300,11 @@
       setSigned($('metric-unrealized'), bot.unrealizedPnl);
       $('metric-unrealized-note').textContent = bot.position
         ? `当前持仓浮盈 ${signed(bot.position.unrealizedPnl, 2)} USDC`
+        : isTurtle && bot.running ? `无持仓 · 正在等待 ${bot.turtle?.entryDays || bot.config?.entryDays || 20} 日突破`
+        : bot.waitingForAdmission ? '无持仓 · 等待震荡准入，暂不挂单'
         : `无持仓 · ${bot.openOrders ?? 0} 个挂单待成交`;
+      setFieldLabel('metric-rungs', isTurtle ? '完成交易' : '完成格数');
+      setFieldLabel('metric-orders', isTurtle ? '常驻挂单' : '挂单');
       $('metric-rungs').textContent = bot.stats?.completedRungs ?? 0;
       $('metric-volume').textContent = `成交额 ${money(bot.volume)}`;
       $('metric-orders').textContent = bot.openOrders ?? 0;
@@ -2007,15 +2313,21 @@
       setRuntimeNode($('runtime-exchange'), bot.runtimeAvailable === false ? `DE: ${consoleMode === 'live' ? '实盘未启动' : '模拟盘未启动'}` : `DE: ${bot.running ? '运行中' : '待机'}`, healthTone);
       const riskHalted = !!bot.liveRisk?.halted;
       setRuntimeNode($('runtime-risk'), bot.runtimeAvailable === false ? '风控: 未启动' : (riskHalted ? '风控: 已锁定' : (state.app?.mode === 'live' ? '风控: 正常' : '风控: PAPER')), riskHalted ? 'error' : 'ok');
-      $('run-state').textContent = bot.runtimeAvailable === false ? `${consoleMode === 'live' ? '实盘' : '模拟盘'}未启动` : (bot.running ? (bot.recovery ? '回收中' : '运行中') : '未运行');
+      $('run-state').textContent = bot.runtimeAvailable === false ? `${consoleMode === 'live' ? '实盘' : '模拟盘'}未启动` : (bot.running ? (bot.recovery ? '回收中' : bot.waitingForAdmission ? '等待准入' : '运行中') : '未运行');
       $('run-state').className = `pill push ${bot.running ? 'paper' : ''}`;
-      $('range-state').textContent = bot.outOfRange ? '超出区间' : (bot.config ? '区间内' : '未配置');
+      $('range-state').textContent = isTurtle
+        ? (bot.running ? (bot.position ? '持仓管理中' : '等待突破') : '未运行')
+        : bot.waitingForAdmission ? '等待震荡准入'
+        : bot.outOfRange ? '超出区间' : (bot.config ? '区间内' : '未配置');
       $('range-state').className = `pill push ${bot.outOfRange ? 'live' : (bot.config ? 'paper' : '')}`;
       $('position-size').textContent = bot.position ? `${signed(bot.position.sizeBase, 6)} 币` : '无仓位';
       $('position-entry').textContent = bot.position ? money(bot.position.entryPrice) : '--';
       $('risk-notional').textContent = bot.risk ? `${money(bot.risk.notional)} USDC` : '--';
       $('risk-margin').textContent = bot.risk ? `${money(bot.risk.requiredMargin)} USDC` : '--';
-      $('risk-rung').textContent = bot.risk ? `${money(bot.risk.perRungProfit)} USDC` : '--';
+      setFieldLabel('risk-margin', isTurtle ? '1x 名义占用' : '预估保证金');
+      setFieldLabel('risk-rung', isTurtle ? '单位风险预算' : '单格毛利');
+      setFieldLabel('risk-spacing', isTurtle ? 'ATR N / 价格' : '单格间距');
+      $('risk-rung').textContent = bot.risk ? (isTurtle ? `${money(bot.risk.unitRiskBudget)} USDC` : `${money(bot.risk.perRungProfit)} USDC`) : '--';
       $('risk-spacing').textContent = bot.risk ? `${format(bot.risk.spacingPct, 3)}%` : '--';
       renderStrategyMonitor(bot);
       $('risk-daily-loss').textContent = `${money(bot.liveRisk?.dailyLoss)} USDC`;
@@ -2027,7 +2339,11 @@
       if (bot.running) {
         state.formDirty = false;
         const activeProfile = strategyProfile(bot.config?.strategyId) || strategyProfile(strategyIdForMode(bot.config?.mode));
-        $('action-status').textContent = `${activeProfile?.name || modeName(bot.config.mode)} · ${bot.openOrders} 个挂单`;
+        $('action-status').textContent = isTurtle
+          ? `${activeProfile?.name || '海龟突破做多'} · ${bot.position ? `${bot.turtle?.currentUnits || 0} 个单位持仓` : '等待突破'}`
+          : bot.waitingForAdmission
+            ? `${activeProfile?.name || modeName(bot.config.mode)} · 等待准入 · ${bot.strategyGuard?.rangeAdmission?.detail || '条件检查中'}`
+            : `${activeProfile?.name || modeName(bot.config.mode)} · ${bot.openOrders} 个挂单`;
         renderRunningStrategy(bot);
       } else if (!state.formDirty) {
         $('action-status').textContent = health.reason || '等待启动';
@@ -2037,7 +2353,7 @@
         const side = bot.position.sizeBase > 0 ? '多头' : '空头';
         $('rescue-detail').textContent = `${side} ${Math.abs(bot.position.sizeBase)} 币 · 均价 ${money(bot.position.entryPrice)} · 未实现 ${signed(bot.position.unrealizedPnl, 2)} USDC`;
       }
-      if (bot.config && !state.formDirty) syncForm(bot.config);
+      if (bot.config && !state.formDirty && !isTurtle) syncForm(bot.config);
       renderLadder(bot);
       renderLogs(bot.activity || bot.alerts || []);
       renderModeGuard();
@@ -2047,19 +2363,33 @@
       const element = $('ai-autopilot-status');
       if (!element) return;
       if (state.ai?.config?.autopilotEnabled === undefined) {
-        element.textContent = '服务待重启，重启后可配置 AI 自动策略';
+        element.textContent = '服务待重启，重启后可使用大周期自动轮动';
         return;
       }
       if (!status) {
-        element.textContent = consoleMode === 'live' ? '实盘禁止 AI 自动切换策略' : '正在读取 AI 自动策略状态';
+        element.textContent = consoleMode === 'live' ? '实盘禁止自动切换策略' : '正在读取大周期自动轮动状态';
         return;
       }
-      const parts = [status.message || (status.enabled ? '等待下一次 AI 行情分析' : 'AI 自动策略已关闭')];
+      const parts = [status.message || (status.enabled ? '等待下一次大周期分析' : '大周期自动轮动已关闭')];
       if (status.effective) {
+        if (status.strategyName) parts.push(status.strategyName);
         parts.push(`每 ${status.intervalMinutes} 分钟分析`);
         parts.push(`置信度 ≥ ${Math.round(Number(status.minConfidence || 0) * 100)}%`);
+        if (!status.requiresLiveSentiment && status.historyEvaluatedAt) parts.push(`启动已回放 ${status.historySignalsEvaluated || 0} 个已完成小时`);
+        if (status.lastSignalTime) parts.push(`信号截止 ${new Date(status.lastSignalTime).toLocaleString('zh-CN', { hour12: false })}`);
         if (status.candidate) parts.push(`候选 ${modeName(status.candidate)} ${status.candidateCount}/${status.confirmationsRequired}`);
-        if (Number(status.cooldownUntil) > Date.now()) parts.push(`冷却剩余 ${durationText(Number(status.cooldownUntil) - Date.now())}`);
+        if (Number(status.cooldownUntil) > Date.now()) parts.push(`最短持有剩余 ${durationText(Number(status.cooldownUntil) - Date.now())}`);
+        if (status.requiresLiveSentiment) {
+          const sentiment = status.sentiment;
+          if (sentiment) {
+            parts.push(`情绪 ${sentimentDirectionName(sentiment.direction)} ${signed(sentiment.score, 2)}`);
+            parts.push(`置信度 ${format(Number(sentiment.confidence) * 100, 0)}%`);
+            parts.push(`独立来源 ${sentiment.independentSourceCount || 0}`);
+            if (sentiment.observedAt) parts.push(`搜索 ${new Date(sentiment.observedAt).toLocaleString('zh-CN', { hour12: false })}`);
+          }
+          if (status.sentimentReason) parts.push(status.sentimentReason);
+          else if (status.sentimentError) parts.push(`情绪读取失败：${status.sentimentError}`);
+        }
       }
       if (status.lastActionAt) parts.push(`最近动作 ${new Date(status.lastActionAt).toLocaleString('zh-CN', { hour12: false })}`);
       element.textContent = parts.join(' · ');
@@ -2074,6 +2404,7 @@
         runtimeAvailable: false,
         recovery: false,
         running: false,
+        waitingForAdmission: false,
         config: null,
         grid: null,
         outOfRange: false,
@@ -2136,14 +2467,24 @@
       }
 
       const guard = bot.strategyGuard;
+      const admission = guard?.rangeAdmission;
       if (!guard) {
         $('trend-guard-state').textContent = '--';
-      } else if (!guard.enabled) {
+      } else if (!guard.enabled && !admission?.enabled) {
         $('trend-guard-state').textContent = '已关闭';
       } else {
         const trendName = ({ up: '上升', down: '下降', range: '震荡' })[guard.trend] || '未知';
         const blocked = (guard.blockedOpeningSides || []).map((side) => side === 'buy' ? '暂停开多' : '暂停开空').join('、');
-        $('trend-guard-state').textContent = `${trendName} ${Math.round((guard.strength || 0) * 100)}%${blocked ? ` · ${blocked}` : ' · 双向可开'}`;
+        const admissionText = admission?.enabled ? (admission.allowed ? '震荡准入' : '准入暂停') : null;
+        const scales = [guard.buySizeScale, guard.sellSizeScale].some((value) => Number(value) < 1)
+          ? `库存缩放 买${format((guard.buySizeScale ?? 1) * 100, 0)}%/卖${format((guard.sellSizeScale ?? 1) * 100, 0)}%`
+          : null;
+        $('trend-guard-state').textContent = [
+          guard.enabled ? `${trendName} ${Math.round((guard.strength || 0) * 100)}%` : null,
+          admissionText,
+          blocked || '双向可开',
+          scales,
+        ].filter(Boolean).join(' · ');
       }
 
       const costs = bot.executionCosts;
@@ -2157,6 +2498,19 @@
     function renderLadder(bot) {
       const ladder = $('ladder');
       ladder.innerHTML = '';
+      if (bot.engine === 'turtle' || bot.config?.engine === 'turtle') {
+        const turtle = bot.turtle || {};
+        for (let index = 0; index < Number(turtle.maxUnits || 4); index++) {
+          const line = document.createElement('div');
+          line.className = `rung ${index < Number(turtle.currentUnits || 0) ? 'buy' : ''}`;
+          line.title = index < Number(turtle.currentUnits || 0) ? `已持有第 ${index + 1} 单位` : `等待第 ${index + 1} 单位`;
+          ladder.appendChild(line);
+        }
+        $('range-upper').textContent = `突破 ${money(turtle.entryHigh)}`;
+        $('range-current').textContent = `当前 ${money(bot.lastPrice)}`;
+        $('range-lower').textContent = `退出 ${money(turtle.activeExitPrice || turtle.exitLow)}`;
+        return;
+      }
       const levels = bot.grid?.levels || [];
       if (!levels.length) {
         for (let i = 0; i < 9; i++) ladder.insertAdjacentHTML('beforeend', '<div class="rung"></div>');
@@ -2421,7 +2775,7 @@
     function paperEquityBlockReason(bot) {
       if (consoleMode !== 'paper' || state.app?.mode !== 'paper' || bot?.runtimeAvailable === false) return '仅当前 PAPER 模拟盘可以调整账户权益。';
       if (!bot) return '正在读取模拟账户状态。';
-      if (bot?.running) return '网格运行中，不能调整模拟账户权益。';
+      if (bot?.running) return '策略运行中，不能调整模拟账户权益。';
       if (bot?.recovery) return '恢复流程进行中，不能调整模拟账户权益。';
       if (bot?.position) return '仍有模拟持仓，不能调整账户权益。';
       if (bot?.paperReadiness?.noOrphanState === false) return '检测到遗留挂单或恢复状态，不能调整账户权益。';
@@ -2438,16 +2792,26 @@
       $('paper-equity-btn').disabled = state.busy || !!equityReason;
       $('paper-equity-status').textContent = equityReason || '账户空闲，可作为入金或出金调整';
       if (!bot) return;
-      $('start-btn').disabled = state.busy || blocked || !!bot.running || !state.strategyProfilesBackendReady || !selectedProfile?.available || !state.strategyPreview?.ready;
-      $('strategy-profile-select').disabled = state.busy || blocked || !state.strategyProfilesBackendReady;
-      $('adjust-btn').disabled = state.busy || blocked || !bot.running;
+      $('start-btn').disabled = !GridPilotForm.canStartStrategy({
+        consoleMode,
+        busy: state.busy,
+        runtimeBlocked: blocked,
+        running: !!bot.running,
+        backendReady: state.strategyProfilesBackendReady,
+        profileAvailable: !!selectedProfile?.available,
+        previewReady: state.strategyPreview?.ready === true,
+      });
+      $('strategy-profile-select').disabled = state.busy || blocked || !!bot.running || !state.strategyProfilesBackendReady;
+      $('adjust-btn').disabled = state.busy || blocked || !bot.running || bot.engine === 'turtle';
       $('cancel-btn').disabled = state.busy || blocked || !bot.config;
       $('stop-btn').disabled = state.busy || blocked || !bot.config;
       $('risk-reset-btn').disabled = state.busy || blocked || !!bot.running;
+      if (consoleMode === 'paper') renderPaperInstances();
     }
     function setBusyButton(button, busy, label) { button.disabled = busy; button.textContent = label; }
     function sourceName(source) { return source === 'real' ? '真实行情' : source === 'spot' ? '公共现货行情' : source === 'synthetic' ? '合成行情' : '正在连接'; }
     function modeName(mode) { return ({ neutral: '中性', long: '做多', short: '做空', paused: '暂停', recovery: '回收' })[mode] || mode; }
+    function sentimentDirectionName(direction) { return ({ bullish: '偏多', bearish: '偏空', mixed: '混合' })[direction] || '未知'; }
     function durationText(ms) {
       const seconds = Math.max(0, Math.floor(Number(ms) / 1000));
       if (seconds < 60) return `${seconds} 秒`;

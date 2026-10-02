@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULTS = {
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
+  xai: { baseUrl: 'https://api.x.ai/v1', model: 'grok-4.6' },
   anthropic: { baseUrl: 'https://api.anthropic.com', model: 'claude-3-5-haiku-latest' },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.0-flash' },
 };
@@ -28,12 +29,14 @@ export function getAiConfig() {
     model: saved.model || process.env.AI_MODEL || defaults.model,
     modelSmall: saved.modelSmall || process.env.AI_MODEL_SMALL || process.env.AI_MODEL || defaults.model,
     sentinelMinutes: number(saved.sentinelMinutes ?? process.env.AI_SENTINEL_MINUTES, 5),
-    marketMinutes: number(saved.marketMinutes ?? process.env.AI_MARKET_MINUTES, 30),
+    marketMinutes: number(saved.marketMinutes ?? process.env.AI_MARKET_MINUTES, 60),
     reportHour: number(saved.reportHour ?? process.env.AI_REPORT_HOUR, 20),
     autopilotEnabled: bool(saved.autopilotEnabled ?? process.env.AI_AUTOPILOT, false),
-    autopilotMinConfidence: boundedNumber(saved.autopilotMinConfidence ?? process.env.AI_AUTOPILOT_MIN_CONFIDENCE, 0.75, 0.5, 0.95),
-    autopilotConfirmations: Math.round(boundedNumber(saved.autopilotConfirmations ?? process.env.AI_AUTOPILOT_CONFIRMATIONS, 2, 2, 6)),
-    autopilotCooldownMinutes: Math.round(boundedNumber(saved.autopilotCooldownMinutes ?? process.env.AI_AUTOPILOT_COOLDOWN_MINUTES, 240, 60, 1440)),
+    autopilotMinConfidence: boundedNumber(saved.autopilotMinConfidence ?? process.env.AI_AUTOPILOT_MIN_CONFIDENCE, 0.8, 0.5, 0.95),
+    autopilotConfirmations: Math.round(boundedNumber(saved.autopilotConfirmations ?? process.env.AI_AUTOPILOT_CONFIRMATIONS, 12, 2, 24)),
+    autopilotCooldownMinutes: Math.round(boundedNumber(saved.autopilotCooldownMinutes ?? process.env.AI_AUTOPILOT_COOLDOWN_MINUTES, 2880, 60, 10080)),
+    autopilotMinTimeframeVotes: Math.round(boundedNumber(saved.autopilotMinTimeframeVotes ?? process.env.AI_AUTOPILOT_MIN_TIMEFRAME_VOTES, 3, 2, 3)),
+    autopilotNeutralAsPause: bool(saved.autopilotNeutralAsPause ?? process.env.AI_AUTOPILOT_NEUTRAL_AS_PAUSE, false),
   };
 }
 
@@ -51,6 +54,8 @@ export function publicAiConfig() {
     autopilotMinConfidence: config.autopilotMinConfidence,
     autopilotConfirmations: config.autopilotConfirmations,
     autopilotCooldownMinutes: config.autopilotCooldownMinutes,
+    autopilotMinTimeframeVotes: config.autopilotMinTimeframeVotes,
+    autopilotNeutralAsPause: config.autopilotNeutralAsPause,
     configured: Boolean(config.apiKey),
   };
 }
@@ -124,6 +129,42 @@ export async function aiChat({ system = '', messages = [], small = false, json =
   return text;
 }
 
+export async function xaiSearch({ prompt, tools = [], maxTokens = 1800, timeoutMs = 90000 } = {}) {
+  const config = getAiConfig();
+  if (!config.apiKey) throw new Error('未配置 xAI API Key。');
+  if (config.provider !== 'xai') throw new Error('Grok 情绪策略要求 AI Provider 为 xAI。');
+  if (!String(prompt || '').trim()) throw new Error('Grok 搜索提示不能为空。');
+
+  const response = await fetch(`${config.baseUrl}/responses`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: config.model,
+      input: [{ role: 'user', content: String(prompt) }],
+      tools: Array.isArray(tools) ? tools : [],
+      max_output_tokens: maxTokens,
+    }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`xAI 搜索接口错误 HTTP ${response.status}: ${body?.error?.message || JSON.stringify(body || {}).slice(0, 200)}`);
+  }
+  return parseXaiSearchResponse(body, config.model);
+}
+
+export function parseXaiSearchResponse(body, fallbackModel = null) {
+  const text = responseText(body);
+  if (!text) throw new Error('xAI 搜索返回为空。');
+  return {
+    text,
+    citations: responseCitations(body),
+    responseId: body?.id ? String(body.id) : null,
+    model: body?.model || fallbackModel,
+    usage: body?.usage || null,
+  };
+}
+
 export function extractJson(text) {
   const source = String(text || '');
   const start = source.indexOf('{');
@@ -143,4 +184,43 @@ export function extractJson(text) {
     }
   }
   return null;
+}
+
+function responseText(body) {
+  if (typeof body?.output_text === 'string') return body.output_text;
+  const parts = [];
+  for (const item of Array.isArray(body?.output) ? body.output : []) {
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      if (typeof content?.text === 'string' && ['output_text', 'text'].includes(content.type)) parts.push(content.text);
+    }
+  }
+  return parts.join('\n');
+}
+
+function normalizeResponseCitations(value) {
+  const citations = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const url = typeof item === 'string' ? item : item?.url;
+    if (!url || citations.some((citation) => citation.url === String(url))) continue;
+    citations.push({
+      url: String(url),
+      title: typeof item === 'object' && item?.title ? String(item.title).slice(0, 180) : '',
+    });
+  }
+  return citations.slice(0, 20);
+}
+
+function responseCitations(body) {
+  const values = [...(Array.isArray(body?.citations) ? body.citations : [])];
+  for (const item of Array.isArray(body?.output) ? body.output : []) {
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      for (const annotation of Array.isArray(content?.annotations) ? content.annotations : []) {
+        if (annotation?.url) values.push({ url: annotation.url, title: annotation.title || '' });
+      }
+    }
+    for (const source of Array.isArray(item?.action?.sources) ? item.action.sources : []) {
+      if (source?.url) values.push({ url: source.url, title: source.title || '' });
+    }
+  }
+  return normalizeResponseCitations(values);
 }

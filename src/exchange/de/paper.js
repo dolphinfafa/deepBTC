@@ -10,6 +10,7 @@
 // needed) and falls back to a synthetic random walk only if those fail too.
 import { EventEmitter } from 'node:events';
 import { decibelAuthHeaders } from './auth.js';
+import { aggregateCandles } from '../../candles.js';
 
 const FALLBACK_MARKETS = [
   { marketId: 1, name: 'BTC-USD', displayName: 'BTC-USD', symbol: 'BTC', lastPrice: 74000, stepSize: 0.00001, stepPrice: 1, maxLeverage: 50, minOrderSize: 0.0001 },
@@ -17,6 +18,7 @@ const FALLBACK_MARKETS = [
 ];
 const INTERVALS = { 60: '1m', 300: '5m', 900: '15m', 1800: '30m', 3600: '1h', 7200: '2h', 14400: '4h', 86400: '1d' };
 const COINBASE_GRANULARITIES = new Set([60, 300, 900, 3600, 21600, 86400]);
+const COINBASE_CANDLE_CHUNK = 250;
 
 export class PaperExchange extends EventEmitter {
   constructor(opts = {}) {
@@ -61,6 +63,39 @@ export class PaperExchange extends EventEmitter {
     this._tickTimer = null;
     this._pollTimer = null;
     this._spotTimer = null;
+    this._following = null;
+    this._onSharedPrice = null;
+  }
+
+  /** Share one market-data clock while keeping orders, positions and PnL isolated. */
+  follow(source) {
+    if (!source || source === this) throw new Error('共享行情源无效。');
+    this.dispose();
+    this._following = source;
+    this.dataSource = source.dataSource;
+    this.network = source.network;
+    this.apiUrl = source.apiUrl;
+    this.markets = new Map([...source.markets.entries()].map(([id, market]) => [id, { ...market }]));
+    this.prices = new Map(source.prices);
+    this.realTarget = new Map(source.realTarget);
+    this.lastOkAt = source.lastOkAt;
+    this._onSharedPrice = ({ marketId, price }) => {
+      const id = Number(marketId);
+      const next = Number(price);
+      const previous = this.prices.get(id) ?? next;
+      this.dataSource = source.dataSource;
+      this.network = source.network;
+      this.lastOkAt = source.lastOkAt || Date.now();
+      this._applyFunding(Date.now());
+      this.prices.set(id, next);
+      this.realTarget.set(id, next);
+      const market = this.markets.get(id);
+      if (market) market.lastPrice = next;
+      this.emit('price', { marketId: id, price: next });
+      this._matchFills(id, previous, next);
+    };
+    source.on('price', this._onSharedPrice);
+    return true;
   }
 
   async init() {
@@ -96,6 +131,7 @@ export class PaperExchange extends EventEmitter {
 
   /** Reconnect: re-probe endpoints (upgrades synthetic->real if now reachable) and restart loops. */
   async reconnect() {
+    if (this._following) return this.follow(this._following);
     try {
       for (const url of this.candidates) {
         const list = await this._fetchMarkets(url);
@@ -187,6 +223,7 @@ export class PaperExchange extends EventEmitter {
   }
 
   async getCandles(marketId, intervalSec = 3600, n = 200) {
+    if (this._following?.getCandles) return this._following.getCandles(marketId, intervalSec, n);
     const m = this.markets.get(Number(marketId));
     if (this.dataSource === 'real' && m?.addr) {
       try {
@@ -197,9 +234,14 @@ export class PaperExchange extends EventEmitter {
         const res = await fetch(url, { headers: this._headers(), signal: AbortSignal.timeout(8000) });
         if (res.ok) {
           const j = await res.json();
-          const data = (Array.isArray(j) ? j : []).map((c) => ({
-            time: Number(c.t ?? c.T), open: +c.o, high: +c.h, low: +c.l, close: +c.c, volume: +(c.v ?? 0),
-          })).filter((c) => Number.isFinite(c.close)).sort((a, b) => a.time - b.time);
+          const now = Date.now();
+          const data = (Array.isArray(j) ? j : []).map((c) => {
+            const time = Number(c.t ?? c.T);
+            return {
+              time, open: +c.o, high: +c.h, low: +c.l, close: +c.c, volume: +(c.v ?? 0),
+              endTime: time + intervalSec * 1000,
+            };
+          }).filter((c) => Number.isFinite(c.close) && c.endTime <= now).sort((a, b) => a.time - b.time);
           if (data.length >= 20) { this.candleDataSource = 'real'; return data; }
         }
       } catch { /* fall through */ }
@@ -345,11 +387,52 @@ export class PaperExchange extends EventEmitter {
     return true;
   }
 
-  start() { this._startLoops(); }   // no-op if already running
+  /** Immediate PAPER execution used by event-driven strategies such as Turtle. */
+  async executeMarketOrder({ marketId, side, sizeBase, reduceOnly = false }) {
+    const id = Number(marketId);
+    if (!this.markets.has(id) && !this.prices.has(id)) throw new Error('模拟市价单市场不存在。');
+    if (!['buy', 'sell'].includes(side)) throw new Error('模拟市价单方向无效。');
+    const price = Number(this.prices.get(id));
+    let quantity = Number(sizeBase);
+    if (!(price > 0)) throw new Error('没有有效价格，无法执行模拟市价单。');
+    if (!(quantity > 0)) throw new Error('模拟市价单数量必须大于 0。');
+    const market = this.markets.get(id);
+    if (Number(market?.minOrderSize) > 0 && quantity + 1e-12 < Number(market.minOrderSize)) {
+      throw new Error(`模拟市价单数量低于市场最小下单量 ${market.minOrderSize}。`);
+    }
+    const position = this.positions.get(id);
+    if (reduceOnly) {
+      const current = Number(position?.sizeBase) || 0;
+      const reduces = (side === 'sell' && current > 0) || (side === 'buy' && current < 0);
+      if (!reduces) throw new Error('reduce-only 市价单不会减少当前持仓。');
+      quantity = Math.min(quantity, Math.abs(current));
+    }
+    const costs = this._applyFill(id, side, price, quantity);
+    const direction = side === 'buy' ? 1 : -1;
+    const executionPrice = price * (1 + direction * (this.slippageBps + this.spreadBps) / 10_000);
+    const result = {
+      orderId: `paper-market-${this._seq++}`,
+      marketId: id,
+      side,
+      referencePrice: price,
+      executionPrice,
+      price,
+      sizeBase: quantity,
+      reduceOnly: Boolean(reduceOnly),
+      costs,
+    };
+    this.emit('fill', result);
+    return result;
+  }
+
+  start() { if (!this._following) this._startLoops(); }   // no-op if already running
   stop() { /* keep price feed alive across bot stop/start */ }
 
   /** Fully tear down timers when the exchange instance is being replaced. */
   dispose() {
+    if (this._following && this._onSharedPrice) this._following.off('price', this._onSharedPrice);
+    this._following = null;
+    this._onSharedPrice = null;
     if (this._tickTimer) { clearInterval(this._tickTimer); this._tickTimer = null; }
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
     if (this._spotTimer) { clearInterval(this._spotTimer); this._spotTimer = null; }
@@ -413,30 +496,18 @@ export class PaperExchange extends EventEmitter {
 
   async _spotCandles(symbol, intervalSec, n) {
     const upper = String(symbol).toUpperCase();
-    const limit = Math.min(300, Math.max(20, Number(n) || 200));
-    if (COINBASE_GRANULARITIES.has(Number(intervalSec))) {
-      try {
-        const end = new Date();
-        const start = new Date(end.getTime() - limit * Number(intervalSec) * 1000);
-        const query = new URLSearchParams({
-          granularity: String(intervalSec),
-          start: start.toISOString(),
-          end: end.toISOString(),
-        });
-        const res = await fetch(`https://api.exchange.coinbase.com/products/${upper}-USD/candles?${query}`, {
-          headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (res.ok) {
-          const rows = await res.json();
-          const candles = (Array.isArray(rows) ? rows : []).map((row) => ({
-            time: Number(row[0]) * 1000,
-            low: Number(row[1]), high: Number(row[2]),
-            open: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) || 0,
-          })).filter(validCandle).sort((a, b) => a.time - b.time).slice(-limit);
-          if (candles.length >= 20) return candles;
-        }
-      } catch { /* try Binance */ }
+    const seconds = Number(intervalSec);
+    const limit = Math.min(1000, Math.max(20, Number(n) || 200));
+    if (seconds === 14400) {
+      const hourly = await this._coinbaseCandles(upper, 3600, limit * 4 + 8);
+      const aggregated = aggregateCandles(hourly, 14_400_000, 3_600_000)
+        .filter((candle) => candle.endTime <= Date.now())
+        .slice(-limit);
+      if (aggregated.length >= 20) return aggregated;
+    }
+    if (COINBASE_GRANULARITIES.has(seconds)) {
+      const candles = await this._coinbaseCandles(upper, seconds, limit);
+      if (candles.length >= 20) return candles;
     }
     try {
       const interval = INTERVALS[intervalSec] || '1h';
@@ -445,13 +516,54 @@ export class PaperExchange extends EventEmitter {
       });
       if (res.ok) {
         const rows = await res.json();
+        const now = Date.now();
         return (Array.isArray(rows) ? rows : []).map((row) => ({
           time: Number(row[0]), open: Number(row[1]), high: Number(row[2]),
           low: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) || 0,
-        })).filter(validCandle).sort((a, b) => a.time - b.time).slice(-limit);
+          endTime: Number(row[6]) + 1,
+        })).filter((candle) => validCandle(candle) && candle.endTime <= now)
+          .sort((a, b) => a.time - b.time).slice(-limit);
       }
     } catch { /* no public candle feed reachable */ }
     return [];
+  }
+
+  async _coinbaseCandles(symbol, intervalSec, n) {
+    const intervalMs = Number(intervalSec) * 1000;
+    const wanted = Math.min(5000, Math.max(20, Number(n) || 200));
+    const latestComplete = Math.floor(Date.now() / intervalMs) * intervalMs;
+    const chunks = Math.ceil(wanted / COINBASE_CANDLE_CHUNK);
+    const byTime = new Map();
+    let cursorEnd = latestComplete;
+    try {
+      for (let index = 0; index < chunks; index++) {
+        const remaining = wanted - index * COINBASE_CANDLE_CHUNK;
+        const count = Math.min(COINBASE_CANDLE_CHUNK, remaining);
+        const start = cursorEnd - count * intervalMs;
+        const query = new URLSearchParams({
+          granularity: String(intervalSec),
+          start: new Date(start).toISOString(),
+          end: new Date(cursorEnd).toISOString(),
+        });
+        const res = await fetch(`https://api.exchange.coinbase.com/products/${symbol}-USD/candles?${query}`, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) return [];
+        const rows = await res.json();
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const candle = {
+            time: Number(row[0]) * 1000,
+            low: Number(row[1]), high: Number(row[2]),
+            open: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) || 0,
+          };
+          candle.endTime = candle.time + intervalMs;
+          if (validCandle(candle) && candle.endTime <= latestComplete) byTime.set(candle.time, candle);
+        }
+        cursorEnd = start;
+      }
+    } catch { return []; }
+    return [...byTime.values()].sort((a, b) => a.time - b.time).slice(-wanted);
   }
 
   // Price feed: Decibel first; if it stays unreachable (e.g. VPN dropped),

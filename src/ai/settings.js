@@ -17,15 +17,17 @@ export function updateAiSettings(root, input = {}) {
     if (input[key] !== undefined) next[key] = String(input[key] || '').trim();
   }
   if (input.sentinelMinutes !== undefined) next.sentinelMinutes = bounded(input.sentinelMinutes, 0, 1440, 5);
-  if (input.marketMinutes !== undefined) next.marketMinutes = bounded(input.marketMinutes, 0, 1440, 30);
+  if (input.marketMinutes !== undefined) next.marketMinutes = bounded(input.marketMinutes, 0, 1440, 60);
   if (input.reportHour !== undefined) next.reportHour = bounded(input.reportHour, -1, 23, 20);
   if (input.autopilotEnabled !== undefined) next.autopilotEnabled = input.autopilotEnabled === true;
-  if (input.autopilotMinConfidence !== undefined) next.autopilotMinConfidence = bounded(input.autopilotMinConfidence, 0.5, 0.95, 0.75);
-  if (input.autopilotConfirmations !== undefined) next.autopilotConfirmations = Math.round(bounded(input.autopilotConfirmations, 2, 6, 2));
-  if (input.autopilotCooldownMinutes !== undefined) next.autopilotCooldownMinutes = Math.round(bounded(input.autopilotCooldownMinutes, 60, 1440, 240));
+  if (input.autopilotMinConfidence !== undefined) next.autopilotMinConfidence = bounded(input.autopilotMinConfidence, 0.5, 0.95, 0.8);
+  if (input.autopilotConfirmations !== undefined) next.autopilotConfirmations = Math.round(bounded(input.autopilotConfirmations, 2, 24, 12));
+  if (input.autopilotCooldownMinutes !== undefined) next.autopilotCooldownMinutes = Math.round(bounded(input.autopilotCooldownMinutes, 60, 10080, 2880));
+  if (input.autopilotMinTimeframeVotes !== undefined) next.autopilotMinTimeframeVotes = Math.round(bounded(input.autopilotMinTimeframeVotes, 2, 3, 3));
+  if (input.autopilotNeutralAsPause !== undefined) next.autopilotNeutralAsPause = input.autopilotNeutralAsPause === true;
   if (input.apiKey !== undefined && String(input.apiKey).trim()) next.apiKey = String(input.apiKey).trim();
   if (input.clearApiKey === true) delete next.apiKey;
-  if (!['openai', 'anthropic', 'gemini'].includes(next.provider)) throw new Error('AI 提供商不受支持。');
+  if (!['openai', 'xai', 'anthropic', 'gemini'].includes(next.provider)) throw new Error('AI 提供商不受支持。');
   if (next.baseUrl && !/^https?:\/\//i.test(next.baseUrl)) throw new Error('AI Base URL 必须以 http:// 或 https:// 开头。');
   fs.writeFileSync(filePath(root), JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
   try { fs.chmodSync(filePath(root), 0o600); } catch {}
@@ -39,12 +41,14 @@ export function publicAiSettings(settings) {
     model: settings.model || '',
     modelSmall: settings.modelSmall || '',
     sentinelMinutes: bounded(settings.sentinelMinutes, 0, 1440, 5),
-    marketMinutes: bounded(settings.marketMinutes, 0, 1440, 30),
+    marketMinutes: bounded(settings.marketMinutes, 0, 1440, 60),
     reportHour: bounded(settings.reportHour, -1, 23, 20),
     autopilotEnabled: settings.autopilotEnabled === true,
-    autopilotMinConfidence: bounded(settings.autopilotMinConfidence, 0.5, 0.95, 0.75),
-    autopilotConfirmations: Math.round(bounded(settings.autopilotConfirmations, 2, 6, 2)),
-    autopilotCooldownMinutes: Math.round(bounded(settings.autopilotCooldownMinutes, 60, 1440, 240)),
+    autopilotMinConfidence: bounded(settings.autopilotMinConfidence, 0.5, 0.95, 0.8),
+    autopilotConfirmations: Math.round(bounded(settings.autopilotConfirmations, 2, 24, 12)),
+    autopilotCooldownMinutes: Math.round(bounded(settings.autopilotCooldownMinutes, 60, 10080, 2880)),
+    autopilotMinTimeframeVotes: Math.round(bounded(settings.autopilotMinTimeframeVotes, 2, 3, 3)),
+    autopilotNeutralAsPause: settings.autopilotNeutralAsPause === true,
     hasApiKey: Boolean(settings.apiKey),
   };
 }

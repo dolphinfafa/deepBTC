@@ -7,7 +7,15 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node test/grid.test.js",
-    "backtest:btc": "node scripts/backtest-btc.js"
+    "backtest:btc": "node scripts/backtest-btc.js",
+    "fetch:funding": "node scripts/fetch-funding-history.js",
+    "backtest:turtle": "node scripts/backtest-turtle.js",
+    "backtest:ai-rotation": "node scripts/backtest-ai-rotation.js",
+    "backtest:ai-rotation:train": "BACKTEST_RESEARCH_STAGE=train node scripts/backtest-ai-rotation.js",
+    "backtest:ai-rotation:validate": "BACKTEST_RESEARCH_STAGE=validate node scripts/backtest-ai-rotation.js",
+    "backtest:ai-rotation:v3": "BACKTEST_RESEARCH_STAGE=v3 node scripts/backtest-ai-rotation.js",
+    "backtest:long-scale": "BACKTEST_DAYS=1095 BACKTEST_RESEARCH_STAGE=long_scale node scripts/backtest-ai-rotation.js",
+    "backtest:ai-rotation:robustness": "BACKTEST_DAYS=1825 BACKTEST_RESEARCH_STAGE=robustness node scripts/backtest-ai-rotation.js"
   },
   "engines": {
     "node": ">=20"

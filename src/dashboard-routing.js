@@ -55,6 +55,8 @@ export function projectDashboardState(state = {}, runtimeMode = 'paper', request
     dailyPnl: null,
     preflight: null,
     paperReadiness: null,
+    paperInstance: null,
+    paperInstances: [],
     aiAutopilot: null,
   };
 }

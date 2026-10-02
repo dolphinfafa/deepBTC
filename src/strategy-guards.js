@@ -5,6 +5,8 @@ export const STRATEGY_GUARD_DEFAULTS = Object.freeze({
   trendGuardRefreshMs: 5 * 60_000,
 });
 
+import { neutralInventorySize, NEUTRAL_GRID_DEFAULTS } from './neutral-grid.js';
+
 export function directionalExposure({ positionSize = 0, price, equity, maxDirectionalNotionalPct } = {}) {
   const size = Number(positionSize) || 0;
   const mark = Number(price);
@@ -44,6 +46,14 @@ export function inventoryOrderDecision({
   trend = 'range',
   trendStrength = 0,
   trendGuardMinStrength = STRATEGY_GUARD_DEFAULTS.trendGuardMinStrength,
+  mode = 'neutral',
+  rangeAdmissionEnabled = false,
+  rangeAdmissionAllowed = true,
+  inventorySkewEnabled = false,
+  inventorySkewStartPctOfCap = NEUTRAL_GRID_DEFAULTS.inventorySkewStartPctOfCap,
+  inventorySkewMinScale = NEUTRAL_GRID_DEFAULTS.inventorySkewMinScale,
+  stepSize = 0,
+  minOrderSize = 0,
 } = {}) {
   const orderSide = side === 'sell' ? 'sell' : 'buy';
   const requestedSize = Number(sizeBase);
@@ -76,6 +86,10 @@ export function inventoryOrderDecision({
     };
   }
 
+  if (mode === 'neutral' && rangeAdmissionEnabled && !rangeAdmissionAllowed) {
+    return blocked('neutral_range_not_admitted', orderSide, requestedSize);
+  }
+
   const strongTrend = Boolean(trendGuardEnabled)
     && Number(trendStrength) >= Number(trendGuardMinStrength);
   if (strongTrend && trend === 'up' && orderSide === 'sell') {
@@ -85,7 +99,23 @@ export function inventoryOrderDecision({
     return blocked('trend_down_blocks_long', orderSide, requestedSize);
   }
 
-  const signedOrder = orderSide === 'buy' ? requestedSize : -requestedSize;
+  const skew = mode === 'neutral' && inventorySkewEnabled
+    ? neutralInventorySize({
+      side: orderSide,
+      requestedSize,
+      positionSize: position,
+      price,
+      equity,
+      maxDirectionalNotionalPct,
+      startPctOfCap: inventorySkewStartPctOfCap,
+      minScale: inventorySkewMinScale,
+      stepSize,
+      minOrderSize,
+    })
+    : { sizeBase: requestedSize, scale: 1, applied: false };
+  if (!(skew.sizeBase > 0)) return blocked('inventory_skew_min_size', orderSide, requestedSize);
+
+  const signedOrder = orderSide === 'buy' ? skew.sizeBase : -skew.sizeBase;
   const projectedSize = position + signedOrder;
   const exposure = directionalExposure({ positionSize: projectedSize, price, equity, maxDirectionalNotionalPct });
   if (!(exposure.capNotional > 0)) return blocked('invalid_equity', orderSide, requestedSize, exposure);
@@ -97,11 +127,13 @@ export function inventoryOrderDecision({
     allowed: true,
     reason: 'opening_allowed',
     side: orderSide,
-    sizeBase: requestedSize,
+    sizeBase: skew.sizeBase,
     opening: true,
     reduceOnly: false,
     reducing: false,
     projectedExposure: exposure,
+    inventoryScale: skew.scale,
+    inventorySkewApplied: skew.applied,
   };
 }
 
@@ -120,6 +152,8 @@ export function guardReasonText(reason) {
     exposure_cap: '已达到方向敞口上限',
     trend_up_blocks_short: '强上升趋势，暂停新增空头',
     trend_down_blocks_long: '强下降趋势，暂停新增多头',
+    neutral_range_not_admitted: '大周期尚未确认宽幅震荡，暂停中性开仓',
+    inventory_skew_min_size: '库存偏置后的数量低于市场最小下单量',
   })[reason] || reason || '策略保护已阻止新增仓位';
 }
 
